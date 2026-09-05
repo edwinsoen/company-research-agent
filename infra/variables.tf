@@ -1,7 +1,6 @@
 variable "project_id" {
-  description = "Google Cloud Project ID"
+  description = "Google Cloud Project ID (pass via -var='project_id=...' or TF_VAR_project_id)"
   type        = string
-  default     = "edwinsoen-l200"
 }
 
 variable "region" {

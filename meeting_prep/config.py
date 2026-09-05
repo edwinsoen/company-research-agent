@@ -5,7 +5,27 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT", "edwinsoen-l200")
+def _detect_gcp_project() -> str:
+    proj = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCP_PROJECT")
+    if proj:
+        return proj
+    try:
+        import subprocess
+
+        res = subprocess.run(
+            ["gcloud", "config", "get-value", "project"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return res.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
+PROJECT_ID = _detect_gcp_project()
 LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-3.7-flash")
 
@@ -13,13 +33,15 @@ MODEL_NAME = os.getenv("MODEL_NAME", "gemini-3.7-flash")
 # otherwise transparently use GEMINI_API_KEY.
 if os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() == "true":
     os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "true"
-    os.environ.setdefault("GOOGLE_CLOUD_PROJECT", PROJECT_ID)
+    if PROJECT_ID:
+        os.environ.setdefault("GOOGLE_CLOUD_PROJECT", PROJECT_ID)
     os.environ.setdefault("GOOGLE_CLOUD_LOCATION", LOCATION)
 elif os.getenv("GEMINI_API_KEY"):
     os.environ.pop("GOOGLE_GENAI_USE_VERTEXAI", None)
 else:
     os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "true"
-    os.environ.setdefault("GOOGLE_CLOUD_PROJECT", PROJECT_ID)
+    if PROJECT_ID:
+        os.environ.setdefault("GOOGLE_CLOUD_PROJECT", PROJECT_ID)
     os.environ.setdefault("GOOGLE_CLOUD_LOCATION", LOCATION)
 
 
