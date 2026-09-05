@@ -3,12 +3,12 @@
 Verifies:
 1. Suite A: Gate 2 revision loop with targeted single-researcher rerun on 'Stripe':
    - Leg 1 pauses cleanly at Gate 2 (approve_brief) with no active connection held
-   - Resuming with non-section-naming comment ("The funding and valuation numbers feel out of date")
+   - Resuming with non-section-naming comment ("their pricing seems stale, they moved off per-seat to usage tiers")
    - Refinement router classifies target to profile researcher and invokes it via AgentTool
    - Targeted rerun triggers ONLY profile_researcher (0 calls to news or focus researchers)
    - Composer synthesizes draft v2 and records draft_version == 2
    - Approval gate pauses on draft v2
-   - Resuming with approval calls exit_loop and completes to publisher
+   - Resuming with approval escalates and completes to publisher
 2. Suite B: Gate 1 conditional disambiguation on ambiguous query 'Acme':
    - Ambiguous company pauses at Gate 1 (request_disambiguation)
    - Resuming with candidate selection resolves entity and continues pipeline

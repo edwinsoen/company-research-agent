@@ -30,20 +30,27 @@ Instructions:
 """
 
 
-def handle_approval_tool_callback(tool, args, tool_context, tool_response=None, **kwargs):
-    """Handle human decision returned by approve_brief long-running tool.
-
-    On approval, sets escalate = True to exit the LoopAgent deterministically (HLD §7.2).
-    """
-    if tool.name == "approve_brief" and isinstance(tool_response, dict):
-        tool_context.actions.state_delta["approval_decision"] = tool_response
-        if tool_response.get("status") == "approved":
-            tool_context.actions.escalate = True
-    return None
-
-
 def handle_approval_agent_callback(callback_context):
-    """Check approval_decision in state. On approval, set escalate = True to exit LoopAgent."""
+    """Handle approval gate completion.
+
+    On approval, sets escalate = True to exit LoopAgent deterministically (HLD §7.2).
+    Also ensures the literal human review feedback from FunctionResponse is preserved in state.
+    """
+    # Preserve raw, literal human review decision from FunctionResponse if resuming
+    user_content = callback_context.user_content
+    if user_content and user_content.parts:
+        for part in user_content.parts:
+            fr = getattr(part, "function_response", None)
+            if fr and fr.name == "approve_brief" and isinstance(fr.response, dict):
+                curr = callback_context.state.get("approval_decision") or {}
+                if isinstance(curr, dict):
+                    if fr.response.get("comment") is not None:
+                        curr["comment"] = fr.response.get("comment")
+                    if fr.response.get("status"):
+                        curr["status"] = fr.response.get("status")
+                    callback_context.state["approval_decision"] = curr
+                break
+
     decision = callback_context.state.get("approval_decision") or {}
     if isinstance(decision, dict):
         status = decision.get("status")
@@ -123,7 +130,6 @@ def create_approval_gate() -> LlmAgent:
         model=MODEL_NAME,
         instruction=APPROVAL_GATE_INSTRUCTION,
         tools=[approve_brief],
-        after_tool_callback=handle_approval_tool_callback,
         after_agent_callback=handle_approval_agent_callback,
         output_schema=ApprovalDecision,
         output_key="approval_decision",
