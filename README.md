@@ -1,9 +1,12 @@
-# Meeting Prep Copilot
+# Company Research Agent
 
-ADK-first, GEAP-managed multi-agent research assistant for executive meeting preparation.
+Demo of ADK-first, GEAP-managed multi-agent research assistant.
+
+This is a work in progress.
 
 ## Architecture
-See [docs/hld.md](docs/hld.md) for full architecture and interface specifications.
+See [docs/hld.md](docs/hld.md) for full architecture and interface specifications
+that will land when the implementation is completed.
 
 ## Local Development (Phase 1)
 
@@ -29,6 +32,9 @@ To execute the full 7-agent pipeline headlessly and verify state contracts again
 ### Run Local ADK Web UI
 To visualize the agent topology and inspect parallel researcher spans in Trace View:
 ```bash
-.venv/bin/adk web meeting_prep/app.py
+.venv/bin/adk web --port 8080 .
 ```
-Then navigate to http://localhost:5000/ to interact with the agent.
+Then navigate to http://localhost:8080/ to interact with the agent.
+
+## License
+Distributed under the [MIT License](LICENSE).
