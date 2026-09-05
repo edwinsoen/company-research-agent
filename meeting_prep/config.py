@@ -36,3 +36,25 @@ def enable_server_side_tools_callback(callback_context=None, llm_request=None, *
         llm_request.config.tool_config.include_server_side_tool_invocations = True
         if not llm_request.config.automatic_function_calling:
             llm_request.config.automatic_function_calling = types.AutomaticFunctionCallingConfig(disable=True)
+
+
+DEPLOYMENT_ENV = os.getenv("DEPLOYMENT_ENV", "local").lower()
+ARTIFACT_BUCKET = os.getenv("ARTIFACT_BUCKET", f"{PROJECT_ID}-artifacts")
+
+
+def get_session_service():
+    """Return VertexAiSessionService if DEPLOYMENT_ENV=='cloud', else InMemorySessionService."""
+    if os.getenv("DEPLOYMENT_ENV", "local").lower() == "cloud":
+        from google.adk.sessions import VertexAiSessionService
+        return VertexAiSessionService(project=PROJECT_ID, location=LOCATION)
+    from google.adk.sessions import InMemorySessionService
+    return InMemorySessionService()
+
+
+def get_artifact_service():
+    """Return GcsArtifactService if DEPLOYMENT_ENV=='cloud', else InMemoryArtifactService."""
+    if os.getenv("DEPLOYMENT_ENV", "local").lower() == "cloud":
+        from google.adk.artifacts import GcsArtifactService
+        return GcsArtifactService(bucket_name=os.getenv("ARTIFACT_BUCKET", f"{PROJECT_ID}-artifacts"))
+    from google.adk.artifacts import InMemoryArtifactService
+    return InMemoryArtifactService()

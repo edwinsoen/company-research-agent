@@ -14,6 +14,9 @@ dependencies = [
     "google-genai",
     "pydantic>=2.0",
     "python-dotenv",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.28.0",
+    "tenacity>=8.2.0",
 ]
 
 [tool.setuptools.packages.find]
