@@ -9,6 +9,7 @@ from google.adk.tools import google_search
 
 from meeting_prep.config import MODEL_NAME, enable_server_side_tools_callback
 from meeting_prep.schemas import ResolvedEntity
+from meeting_prep.tools.hitl import request_disambiguation
 
 DISAMBIGUATOR_INSTRUCTION = """\
 You are an expert entity disambiguation agent for company research.
@@ -19,12 +20,11 @@ Company input: {company_input?}
 Instructions:
 1. If company input is provided above, resolve that company. If empty or missing, inspect the conversation history for the target company name requested by the user.
 2. Use the `google_search` tool to search for the official company, its primary website domain, and business description.
-3. Resolve to the single most prominent, definitive company entity matching the input.
-4. Emit a structured ResolvedEntity with:
-   - `name`: Official canonical company name (e.g., "Stripe, Inc." or "Stripe")
-   - `domain`: Primary website domain (e.g., "stripe.com")
-   - `description`: A clear one-sentence summary of what the company does
-   - `confidence`: Confidence score (0.0 to 1.0) of this resolution (should be >= 0.9 for well-known companies)
+3. Determine resolution certainty:
+   - HIGH CONFIDENCE (>= 0.85): If there is a single prominent, definitive company entity unambiguously matching the input (e.g. "Stripe", "Google", "Airbnb"), do NOT call `request_disambiguation`. Directly output the structured `ResolvedEntity`.
+   - LOW CONFIDENCE (< 0.85) OR AMBIGUOUS: If multiple distinct prominent companies share the name (e.g. "Acme", "Apex", generic names), call the `request_disambiguation` tool passing a list of 2-3 candidate dictionaries:
+     `candidates=[{"name": ..., "domain": ..., "description": ...}, ...]`.
+4. When `request_disambiguation` returns with the human's selection, emit that chosen entity as the structured `ResolvedEntity`.
 """
 
 
@@ -34,8 +34,9 @@ def create_entity_disambiguator() -> LlmAgent:
         name="entity_disambiguator",
         model=MODEL_NAME,
         instruction=DISAMBIGUATOR_INSTRUCTION,
-        tools=[google_search],
+        tools=[google_search, request_disambiguation],
         output_schema=ResolvedEntity,
         output_key="resolved_entity",
         before_model_callback=enable_server_side_tools_callback,
     )
+

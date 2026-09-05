@@ -6,6 +6,7 @@ Source: docs/hld.md §7.2
 
 from google.adk.agents import LlmAgent
 from meeting_prep.config import MODEL_NAME
+from meeting_prep.tools.artifact import save_draft_artifact
 
 COMPOSER_INSTRUCTION = """\
 You are an executive intelligence briefing composer.
@@ -19,6 +20,9 @@ Inputs from research:
 - Recent news findings: {research_news}
 - Focus area findings: {research_focus}
 - Delta summary: {delta_summary}
+- Prior draft (if refining): {brief_draft?}
+- Refinement directive (if refining): {refinement_directive?}
+- Refinement target (if refining): {refinement_target?}
 
 Requirements:
 1. Synthesize ONLY from the provided structured findings. Do not hallucinate external claims.
@@ -39,7 +43,12 @@ Requirements:
    ## 4. Strategic Focus Areas
    (Synthesize findings from research_focus. If no custom focus areas were set or findings are empty, note "*Standard profile requested; no custom focus areas specified.*")
 
-4. Write the final markdown brief to your response. Keep it executive-ready, objective, and well-formatted.
+4. REFINEMENT MODE (When Prior Draft and Refinement Directive are present):
+   - Update ONLY the specific section targeted by the refinement directive/target using the refreshed research findings.
+   - Leave ALL OTHER sections byte-identical to the prior draft.
+5. Save the generated brief:
+   - Call the `save_draft_artifact` tool passing the complete markdown brief string.
+   - Output the final markdown brief to your response. Keep it executive-ready, objective, and well-formatted.
 """
 
 
@@ -49,5 +58,7 @@ def create_composer() -> LlmAgent:
         name="composer",
         model=MODEL_NAME,
         instruction=COMPOSER_INSTRUCTION,
+        tools=[save_draft_artifact],
         output_key="brief_draft",
     )
+

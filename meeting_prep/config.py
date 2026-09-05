@@ -24,7 +24,9 @@ else:
 
 
 def enable_server_side_tools_callback(callback_context=None, llm_request=None, **kwargs):
-    """Ensure Gemini allows built-in tools (like Google Search) to coexist with function calling."""
+    """Ensure Gemini allows built-in tools (like Google Search) to coexist with function calling,
+    and explicitly disables SDK-level automatic function calling (AFC) since ADK orchestrates tool execution.
+    """
     if llm_request:
         from google.genai import types
         if not llm_request.config:
@@ -32,3 +34,5 @@ def enable_server_side_tools_callback(callback_context=None, llm_request=None, *
         if not llm_request.config.tool_config:
             llm_request.config.tool_config = types.ToolConfig()
         llm_request.config.tool_config.include_server_side_tool_invocations = True
+        if not llm_request.config.automatic_function_calling:
+            llm_request.config.automatic_function_calling = types.AutomaticFunctionCallingConfig(disable=True)

@@ -65,14 +65,18 @@ Instructions:
 """
 
 
-def create_root_coordinator() -> LlmAgent:
+def create_root_coordinator() -> SequentialAgent:
     """Create the root_coordinator agent."""
-    pipeline = create_brief_pipeline()
-    return LlmAgent(
-        name="root_coordinator",
+    coordinator_step = LlmAgent(
+        name="root_coordinator_step",
         model=MODEL_NAME,
         instruction=ROOT_COORDINATOR_INSTRUCTION,
         tools=[preload_memory, initialize_briefing_session],
-        sub_agents=[pipeline],
         before_model_callback=enable_server_side_tools_callback,
     )
+    pipeline = create_brief_pipeline()
+    return SequentialAgent(
+        name="root_coordinator",
+        sub_agents=[coordinator_step, pipeline],
+    )
+

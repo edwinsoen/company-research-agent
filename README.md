@@ -24,9 +24,23 @@ that will land when the implementation is completed.
    ```
 
 ### Run Automated Headless Verification
-To execute the full 7-agent pipeline headlessly and verify state contracts against Stripe:
+To execute Phase 1 and Phase 2 automated test suites:
 ```bash
+# Phase 1: State contracts regression
 .venv/bin/python scripts/run_phase1.py
+
+# Phase 2: HITL Gates, targeted refinement loop, and conditional disambiguation
+.venv/bin/python scripts/run_phase2.py
+```
+
+### Interactive CLI (Phase 2)
+The CLI accepts free-text natural language prompts and guides you through the Human-In-The-Loop review gates:
+```bash
+# Provide a prompt directly:
+.venv/bin/python meeting_prep/cli.py "Prepare an executive briefing for my upcoming meeting with Datadog. Focus on AI observability."
+
+# Or launch interactively:
+.venv/bin/python meeting_prep/cli.py
 ```
 
 ### Run Local ADK Web UI
