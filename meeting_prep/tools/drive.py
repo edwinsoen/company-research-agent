@@ -51,20 +51,20 @@ def _get_drive_client_mode() -> str:
     return os.getenv("DRIVE_CLIENT_MODE", "stub").lower().strip()
 
 
+from meeting_prep.auth import get_drive_session
+
+
 @tenacity.retry(
     stop=tenacity.stop_after_attempt(3),
     wait=tenacity.wait_exponential(multiplier=1, min=1, max=10),
     retry=tenacity.retry_if_exception_type(Exception),
     reraise=True,
 )
-def _upload_google_doc(title: str, markdown: str) -> dict[str, str]:
+def _upload_google_doc(title: str, markdown: str, tool_context: Optional[ToolContext] = None) -> dict[str, str]:
     """Upload markdown to Google Drive with mimeType conversion to native Google Doc."""
     import json
-    from google.auth import default
-    from google.auth.transport.requests import AuthorizedSession
 
-    credentials, _ = default(scopes=["https://www.googleapis.com/auth/drive"])
-    session = AuthorizedSession(credentials)
+    session = get_drive_session(tool_context=tool_context)
 
     metadata = {
         "name": title,
@@ -140,7 +140,7 @@ def create_google_doc(
 
     if mode == "drive":
         try:
-            result = _upload_google_doc(title=title, markdown=markdown)
+            result = _upload_google_doc(title=title, markdown=markdown, tool_context=tool_context)
             doc_id = result["doc_id"]
             doc_url = result["doc_url"]
         except Exception as err:
@@ -184,13 +184,9 @@ def create_google_doc(
     retry=tenacity.retry_if_exception_type(Exception),
     reraise=True,
 )
-def _share_drive_file(doc_id: str, email: str) -> None:
+def _share_drive_file(doc_id: str, email: str, tool_context: Optional[ToolContext] = None) -> None:
     """Share Google Drive file with recipient email address."""
-    from google.auth import default
-    from google.auth.transport.requests import AuthorizedSession
-
-    credentials, _ = default(scopes=["https://www.googleapis.com/auth/drive"])
-    session = AuthorizedSession(credentials)
+    session = get_drive_session(tool_context=tool_context)
 
     url = f"https://www.googleapis.com/drive/v3/files/{doc_id}/permissions"
     payload = {
@@ -230,7 +226,7 @@ def share_doc(
 
         if mode == "drive":
             try:
-                _share_drive_file(doc_id=doc_id, email=email)
+                _share_drive_file(doc_id=doc_id, email=email, tool_context=tool_context)
                 shared_results[email] = "success"
             except Exception as err:
                 logger.warning("Failed to share doc %s with %s: %s", doc_id, redacted, err)

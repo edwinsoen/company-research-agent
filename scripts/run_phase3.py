@@ -56,8 +56,11 @@ async def main() -> int:
     print(f"   Project:  {PROJECT_ID} | Region: {LOCATION} | Model: {MODEL_NAME}")
     print("=" * 75)
 
-    os.environ["DRIVE_CLIENT_MODE"] = "stub"
-    reset_stub_creation_counts()
+    mode = os.getenv("DRIVE_CLIENT_MODE", "stub").lower().strip()
+    os.environ["DRIVE_CLIENT_MODE"] = mode
+    print(f"   Drive Client Mode: {mode}")
+    if mode == "stub":
+        reset_stub_creation_counts()
 
     session_service = InMemorySessionService()
     artifact_service = InMemoryArtifactService()
@@ -160,8 +163,9 @@ async def main() -> int:
     # IDEMPOTENCY TEST: Duplicate approval / publish call (HLD §10.5, §16)
     # -----------------------------------------------------------------
     print("\n[3/4] Testing Idempotency: Simulating duplicate approval / publish on same brief...")
-    doc_v1_count_before = get_stub_creation_count(company_name, 1)
-    print(f"      Active doc creations before duplicate call: {doc_v1_count_before}")
+    doc_v1_count_before = get_stub_creation_count(company_name, 1) if mode == "stub" else 1
+    if mode == "stub":
+        print(f"      Active stub doc creations before duplicate call: {doc_v1_count_before}")
 
     class MockContext:
         def __init__(self, state):
@@ -177,15 +181,16 @@ async def main() -> int:
         tool_context=ctx,
     )
 
-    doc_v1_count_after = get_stub_creation_count(company_name, 1)
+    doc_v1_count_after = get_stub_creation_count(company_name, 1) if mode == "stub" else 1
     print(f"      Duplicate call result cached status: {duplicate_doc.get('cached')}")
-    print(f"      Active doc creations after duplicate call:  {doc_v1_count_after}")
+    if mode == "stub":
+        print(f"      Active stub doc creations after duplicate call:  {doc_v1_count_after}")
 
     if not duplicate_doc.get("cached"):
         print("      ❌ FAILED: Duplicate create_google_doc call was not marked cached!")
         return 1
 
-    if doc_v1_count_after != doc_v1_count_before:
+    if mode == "stub" and doc_v1_count_after != doc_v1_count_before:
         print(f"      ❌ FAILED: Document was re-created! Count grew from {doc_v1_count_before} to {doc_v1_count_after}.")
         return 1
 
@@ -199,10 +204,12 @@ async def main() -> int:
     # Final Summary
     # -----------------------------------------------------------------
     print("\n[4/4] Phase 3 Acceptance Summary:")
+    print(f"      Mode:              {mode}")
     print(f"      Company:           {company_name}")
     print(f"      Doc URL:           {pub_url}")
     print(f"      Idempotency Cache: {list(published_docs.keys())}")
-    print(f"      Creations:         {doc_v1_count_after} (exactly 1 doc created despite double approval)")
+    if mode == "stub":
+        print(f"      Creations:         {doc_v1_count_after} (exactly 1 doc created despite double approval)")
     print("\n🎉 PHASE 3 ACCEPTANCE CRITERIA MET SUCCESSFULLY!")
     return 0
 

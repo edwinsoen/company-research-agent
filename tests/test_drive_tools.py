@@ -151,6 +151,23 @@ class TestDriveTools(unittest.TestCase):
         self.assertEqual(result['shared']['valid@example.com'], 'success')
         self.assertIn('invalid-email', result['failed'])
 
+    def test_spiffe_session_resolution_from_token(self):
+        from meeting_prep.auth import get_drive_session
+
+        os.environ["SPIFFE_TOKEN"] = "test-spiffe-jwt-svid"
+        try:
+            session = get_drive_session()
+            self.assertEqual(session.headers.get("Authorization"), "Bearer test-spiffe-jwt-svid")
+        finally:
+            os.environ.pop("SPIFFE_TOKEN", None)
+
+    def test_spiffe_session_resolution_from_delegated_context(self):
+        from meeting_prep.auth import get_drive_session
+
+        ctx = MockToolContext(state={"delegated_drive_token": "delegated-user-token-123"})
+        session = get_drive_session(tool_context=ctx)
+        self.assertEqual(session.headers.get("Authorization"), "Bearer delegated-user-token-123")
+
 
 if __name__ == '__main__':
     unittest.main()
