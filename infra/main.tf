@@ -34,7 +34,10 @@ resource "google_storage_bucket" "artifacts" {
   }
 }
 
-# 2. Agent Identity Service Account & SPIFFE Configuration (HLD §12A.1)
+# 2. Agent Identity & SPIFFE Configuration (HLD §12A.1, §14.1)
+# Agent Runtime provisions a per-agent SPIFFE identity with mTLS credentials.
+# In Agent Engine with AGENT_IDENTITY, permissions are bound to the agent's identity principal.
+# (A bootstrap service account is maintained for WIF/STS federation bindings if needed).
 resource "google_service_account" "agent_identity" {
   account_id   = "${var.app_name}-agent-sa"
   display_name = "Meeting Prep Copilot SPIFFE Agent Identity"
@@ -45,6 +48,12 @@ resource "google_service_account" "agent_identity" {
 resource "google_project_iam_member" "agent_context_editor" {
   project = var.project_id
   role    = "roles/aiplatform.agentContextEditor"
+  member  = "serviceAccount:${google_service_account.agent_identity.email}"
+}
+
+resource "google_project_iam_member" "agent_default_access" {
+  project = var.project_id
+  role    = "roles/aiplatform.agentDefaultAccess"
   member  = "serviceAccount:${google_service_account.agent_identity.email}"
 }
 
@@ -60,3 +69,4 @@ resource "google_storage_bucket_iam_member" "artifact_writer" {
   role   = "roles/storage.objectUser"
   member = "serviceAccount:${google_service_account.agent_identity.email}"
 }
+
