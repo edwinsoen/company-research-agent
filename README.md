@@ -42,7 +42,7 @@ flowchart TD
    - **`root_coordinator`**: Ingests free-text prompts, extracts target company, focus topics, and recipient lists.
    - **`entity_disambiguator`**: Verifies company domain and business entity.
    - **Parallel Researchers**: Concurrently executes company profile analysis, recent news retrieval, and user-specified focus area deep dives.
-   - **`delta_agent`**: Queries memory bank for prior briefs and calculates incremental deltas/changes since the last meeting.
+   - **`delta_agent`**: Computes the incremental delta against prior briefings (the memory bank backend is stubbed until Phase 5).
    - **`composer`**: Synthesizes findings into an executive markdown briefing with structured sections.
 
 2. **Human-In-The-Loop (HITL) Workflow (Phase 2)**:
