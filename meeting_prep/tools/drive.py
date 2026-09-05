@@ -86,7 +86,9 @@ def _upload_google_doc(title: str, markdown: str, tool_context: Optional[ToolCon
 
     url = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
     response = session.post(url, data=body.encode("utf-8"), headers=headers, timeout=30)
-    response.raise_for_status()
+    if not response.ok:
+        logger.error("Drive API upload error (%s): %s", response.status_code, response.text)
+        raise RuntimeError(f"Drive API upload failed ({response.status_code}): {response.text}")
     file_data = response.json()
     doc_id = file_data.get("id")
     doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
@@ -195,7 +197,9 @@ def _share_drive_file(doc_id: str, email: str, tool_context: Optional[ToolContex
         "emailAddress": email,
     }
     response = session.post(url, json=payload, timeout=15)
-    response.raise_for_status()
+    if not response.ok:
+        logger.error("Drive API share error (%s): %s", response.status_code, response.text)
+        raise RuntimeError(f"Drive API share failed ({response.status_code}): {response.text}")
 
 
 def share_doc(

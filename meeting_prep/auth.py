@@ -35,7 +35,7 @@ def _exchange_spiffe_jwt_with_sts(
     """Exchange a SPIFFE JWT token for a Google Cloud access token via STS (RFC 8693)."""
     sts_url = "https://sts.googleapis.com/v1/token"
     audience = f"//iam.googleapis.com/projects/{project_number}/locations/global/workloadIdentityPools/{pool_id}/providers/{provider_id}"
-    scope_str = " ".join(scopes or ["https://www.googleapis.com/auth/drive"])
+    scope_str = " ".join(scopes or ["https://www.googleapis.com/auth/drive.file"])
 
     payload = {
         "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
@@ -97,23 +97,21 @@ def get_drive_session(tool_context: Optional[Any] = None) -> Any:
                 logger.info("Using delegated drive token from session state")
                 return SpiffeCredentialsSession(token)
 
-    # 2. Explicit SPIFFE JWT Token / SVID
-    spiffe_token = os.getenv("SPIFFE_TOKEN")
-    if not spiffe_token and os.getenv("SPIFFE_SVID_PATH"):
+    # 2. Explicit Delegated User Token or SPIFFE Token via environment
+    drive_token = os.getenv("DRIVE_USER_TOKEN") or os.getenv("SPIFFE_TOKEN")
+    if not drive_token and os.getenv("SPIFFE_SVID_PATH"):
         svid_path = os.getenv("SPIFFE_SVID_PATH")
         if os.path.isfile(svid_path):
             with open(svid_path, "r", encoding="utf-8") as f:
-                spiffe_token = f.read().strip()
+                drive_token = f.read().strip()
 
-    project_number = os.getenv("GCP_PROJECT_NUMBER")
-    wif_pool = os.getenv("SPIFFE_WIF_POOL", "agent-identity-pool")
-    wif_provider = os.getenv("SPIFFE_WIF_PROVIDER", "spiffe-jwt-provider")
-
-    if spiffe_token:
-        logger.info("Resolving Google Cloud access token from SPIFFE identity...")
-        if project_number:
+    if drive_token:
+        project_number = os.getenv("GCP_PROJECT_NUMBER")
+        wif_pool = os.getenv("SPIFFE_WIF_POOL", "agent-identity-pool")
+        wif_provider = os.getenv("SPIFFE_WIF_PROVIDER", "spiffe-jwt-provider")
+        if project_number and drive_token.startswith("ey"):
             access_token = _exchange_spiffe_jwt_with_sts(
-                spiffe_token=spiffe_token,
+                spiffe_token=drive_token,
                 project_number=project_number,
                 pool_id=wif_pool,
                 provider_id=wif_provider,
@@ -121,10 +119,30 @@ def get_drive_session(tool_context: Optional[Any] = None) -> Any:
             if access_token:
                 logger.info("Successfully exchanged SPIFFE JWT for Google Drive access token")
                 return SpiffeCredentialsSession(access_token)
-        else:
-            # If no STS pool is configured, use the SPIFFE token directly (e.g., local mock or mTLS proxy)
-            logger.info("Using SPIFFE token directly as bearer token")
-            return SpiffeCredentialsSession(spiffe_token)
+        logger.info("Using delegated user token as bearer token for Google Drive")
+        return SpiffeCredentialsSession(drive_token)
+
+    # 3. Local Delegated User Token File (.drive_user_token.json or DRIVE_CREDENTIALS_FILE)
+    token_file = os.getenv("DRIVE_CREDENTIALS_FILE", ".drive_user_token.json")
+    if os.path.isfile(token_file):
+        try:
+            with open(token_file, "r", encoding="utf-8") as f:
+                token_data = json.load(f)
+            from google.oauth2.credentials import Credentials
+            from google.auth.transport.requests import AuthorizedSession
+
+            creds = Credentials(
+                token=token_data.get("access_token"),
+                refresh_token=token_data.get("refresh_token"),
+                token_uri=token_data.get("token_uri", "https://oauth2.googleapis.com/token"),
+                client_id=token_data.get("client_id"),
+                client_secret=token_data.get("client_secret"),
+                scopes=["https://www.googleapis.com/auth/drive.file"],
+            )
+            logger.info("Using delegated user credentials from %s", token_file)
+            return AuthorizedSession(creds)
+        except Exception as err:
+            logger.warning("Failed to load drive credentials from %s: %s", token_file, err)
 
     # 3. Workload Identity Federation / External Account Credentials
     gac_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
@@ -137,7 +155,10 @@ def get_drive_session(tool_context: Optional[Any] = None) -> Any:
                 from google.auth import load_credentials_from_dict
                 from google.auth.transport.requests import AuthorizedSession
 
-                creds, _ = load_credentials_from_dict(cred_info, scopes=["https://www.googleapis.com/auth/drive"])
+                creds, _ = load_credentials_from_dict(
+                    cred_info,
+                    scopes=["https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive"],
+                )
                 return AuthorizedSession(creds)
         except Exception as e:
             logger.warning("Failed to load external account credential from %s: %s", gac_path, e)
@@ -147,7 +168,10 @@ def get_drive_session(tool_context: Optional[Any] = None) -> Any:
         from google.auth import default
         from google.auth.transport.requests import AuthorizedSession
 
-        creds, _ = default(scopes=["https://www.googleapis.com/auth/drive"])
+        try:
+            creds, _ = default(scopes=["https://www.googleapis.com/auth/drive.file"])
+        except Exception:
+            creds, _ = default(scopes=["https://www.googleapis.com/auth/drive"])
         return AuthorizedSession(creds)
     except Exception as e:
         logger.error("Unable to resolve credentials for Google Drive: %s", e)

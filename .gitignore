@@ -1,6 +1,8 @@
 # Environment & Secrets
 .env
 *.env
+client_secret*.json
+.drive_user_token*
 
 # Python & Virtual Environments
 .venv/
