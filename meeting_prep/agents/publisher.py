@@ -7,6 +7,7 @@ Source: docs/hld.md §7.2
 from google.adk.agents import LlmAgent
 from meeting_prep.config import MODEL_NAME, enable_server_side_tools_callback
 from meeting_prep.tools.drive import create_google_doc, share_doc
+from meeting_prep.callbacks.memory import save_memory_after_publish
 
 PUBLISHER_INSTRUCTION = """\
 You are an executive publishing agent.
@@ -61,5 +62,6 @@ def create_publisher() -> LlmAgent:
         instruction=PUBLISHER_INSTRUCTION,
         tools=[create_google_doc, share_doc],
         before_agent_callback=check_approval_before_publish,
+        after_agent_callback=save_memory_after_publish,
         before_model_callback=enable_server_side_tools_callback,
     )

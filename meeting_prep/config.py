@@ -1,7 +1,9 @@
 """Configuration for Meeting Prep Copilot."""
 
 import os
+from typing import Any, Optional
 from dotenv import load_dotenv
+from google.adk.memory import InMemoryMemoryService
 
 load_dotenv()
 
@@ -90,3 +92,78 @@ def get_artifact_service():
         return GcsArtifactService(bucket_name=bucket)
     from google.adk.artifacts import InMemoryArtifactService
     return InMemoryArtifactService()
+
+
+class LocalMemoryService(InMemoryMemoryService):
+    """In-memory memory service supporting direct add_memory with custom metadata.
+
+    Used for local development and testing when VertexAiMemoryBankService is not configured.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._direct_memories: dict[tuple[str, str], list[Any]] = {}
+
+    async def add_memory(
+        self,
+        *,
+        app_name: str,
+        user_id: str,
+        memories: Any,
+        custom_metadata: Optional[dict[str, Any]] = None,
+    ) -> None:
+        user_key = (app_name, user_id)
+        with self._lock:
+            if user_key not in self._direct_memories:
+                self._direct_memories[user_key] = []
+            for mem in memories:
+                if custom_metadata:
+                    existing = getattr(mem, "custom_metadata", {}) or {}
+                    merged = dict(existing)
+                    merged.update(custom_metadata)
+                    mem.custom_metadata = merged
+                self._direct_memories[user_key].append(mem)
+
+    async def search_memory(
+        self, *, app_name: str, user_id: str, query: str
+    ) -> Any:
+        from google.adk.memory.base_memory_service import SearchMemoryResponse
+
+        base_resp = await super().search_memory(app_name=app_name, user_id=user_id, query=query)
+        base_memories = list(base_resp.memories or [])
+
+        user_key = (app_name, user_id)
+        query_words = set(query.lower().split())
+
+        scored: list[tuple[int, Any]] = []
+        with self._lock:
+            direct_list = list(self._direct_memories.get(user_key, []))
+
+        for mem in direct_list:
+            text = ""
+            if mem.content and mem.content.parts:
+                for p in mem.content.parts:
+                    t = getattr(p, "text", "")
+                    if t:
+                        text += t
+            words_in_text = set(text.lower().split())
+            matched = len(query_words.intersection(words_in_text))
+            meta = getattr(mem, "custom_metadata", {}) or {}
+            for v in meta.values():
+                if isinstance(v, str) and any(w in v.lower() for w in query_words):
+                    matched += 2
+            if matched > 0 or not query_words:
+                scored.append((matched, mem))
+
+        scored.sort(key=lambda x: -x[0])
+        combined = [mem for _, mem in scored] + base_memories
+        return SearchMemoryResponse(memories=combined[:10])
+
+
+def get_memory_service():
+    """Return VertexAiMemoryBankService if DEPLOYMENT_ENV=='cloud', else LocalMemoryService."""
+    if os.getenv("DEPLOYMENT_ENV", "local").lower() == "cloud":
+        from google.adk.memory import VertexAiMemoryBankService
+        return VertexAiMemoryBankService(project=PROJECT_ID, location=LOCATION)
+    return LocalMemoryService()
+

@@ -15,6 +15,7 @@ import sys
 from typing import Any, Optional
 
 from google.adk.artifacts import InMemoryArtifactService
+from google.adk.memory import InMemoryMemoryService
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
@@ -176,6 +177,7 @@ async def run_pipeline(
     else:
         session_service = InMemorySessionService()
         artifact_service = InMemoryArtifactService()
+        memory_service = InMemoryMemoryService()
         session = await session_service.create_session(
             app_name=app.name,
             user_id=user_id,
@@ -189,6 +191,7 @@ async def run_pipeline(
             app=app,
             session_service=session_service,
             artifact_service=artifact_service,
+            memory_service=memory_service,
         )
 
     next_message = types.Content(

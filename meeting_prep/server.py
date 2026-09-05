@@ -36,6 +36,7 @@ from meeting_prep.config import (
     LOCATION,
     get_session_service,
     get_artifact_service,
+    get_memory_service,
 )
 
 logger = logging.getLogger(__name__)
@@ -49,10 +50,12 @@ server = FastAPI(
 # Global services (managed Vertex AI or in-memory depending on environment)
 session_service = get_session_service()
 artifact_service = get_artifact_service()
+memory_service = get_memory_service()
 runner = Runner(
     app=adk_app,
     session_service=session_service,
     artifact_service=artifact_service,
+    memory_service=memory_service,
 )
 
 
