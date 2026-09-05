@@ -159,43 +159,62 @@ async def main() -> int:
         print("      ❌ FAILED: published_doc_url is missing from session state.")
         return 1
 
+    draft_version = int(final_session.state.get("draft_version") or 1)
+
     # -----------------------------------------------------------------
     # IDEMPOTENCY TEST: Duplicate approval / publish call (HLD §10.5, §16)
     # -----------------------------------------------------------------
-    print("\n[3/4] Testing Idempotency: Simulating duplicate approval / publish on same brief...")
-    doc_v1_count_before = get_stub_creation_count(company_name, 1) if mode == "stub" else 1
+    print("\n[3/4] Testing Idempotency: Re-sending approval through runner to verify end-to-end idempotency...")
+    doc_v_count_before = get_stub_creation_count(company_name, draft_version) if mode == "stub" else 1
     if mode == "stub":
-        print(f"      Active stub doc creations before duplicate call: {doc_v1_count_before}")
+        print(f"      Active stub doc creations before duplicate approval: {doc_v_count_before}")
 
-    class MockContext:
+    dup_tools_called = []
+    async for event in runner.run_async(user_id=user_id, session_id=session.id, new_message=approve_msg):
+        agent_name = getattr(event, "author", None) or "system"
+        fc = event.get_function_calls()
+        if fc:
+            for c in fc:
+                dup_tools_called.append(c.name)
+                print(f"      🔧 [{agent_name}] Tool: {c.name}")
+
+    after_session = await session_service.get_session(
+        app_name=app.name,
+        user_id=user_id,
+        session_id=session.id,
+    )
+    doc_v_count_after = get_stub_creation_count(company_name, draft_version) if mode == "stub" else 1
+    after_pub_url = after_session.state.get("published_doc_url")
+
+    print(f"      Duplicate pass tools executed: {dup_tools_called}")
+    print(f"      Published doc URL after duplicate pass: {after_pub_url}")
+    if mode == "stub":
+        print(f"      Active stub doc creations after duplicate pass:   {doc_v_count_after}")
+
+    if mode == "stub" and doc_v_count_after != doc_v_count_before:
+        print(f"      ❌ FAILED: Document was re-created! Count grew from {doc_v_count_before} to {doc_v_count_after}.")
+        return 1
+
+    if after_pub_url != pub_url:
+        print(f"      ❌ FAILED: URL mismatch: {after_pub_url} vs {pub_url}")
+        return 1
+
+    # Verify direct tool invocation idempotency with session state
+    class SessionToolContext:
         def __init__(self, state):
             self.state = state
             self.actions = type("Actions", (), {"state_delta": {}})()
 
-    ctx = MockContext(dict(final_session.state))
+    ctx = SessionToolContext(dict(after_session.state))
     duplicate_doc = create_google_doc(
         title=f"Executive Brief: {company_name}",
-        markdown=final_session.state.get("brief_draft", ""),
+        markdown=after_session.state.get("brief_draft", ""),
         brief_id=company_name,
-        version=1,
+        version=draft_version,
         tool_context=ctx,
     )
-
-    doc_v1_count_after = get_stub_creation_count(company_name, 1) if mode == "stub" else 1
-    print(f"      Duplicate call result cached status: {duplicate_doc.get('cached')}")
-    if mode == "stub":
-        print(f"      Active stub doc creations after duplicate call:  {doc_v1_count_after}")
-
     if not duplicate_doc.get("cached"):
-        print("      ❌ FAILED: Duplicate create_google_doc call was not marked cached!")
-        return 1
-
-    if mode == "stub" and doc_v1_count_after != doc_v1_count_before:
-        print(f"      ❌ FAILED: Document was re-created! Count grew from {doc_v1_count_before} to {doc_v1_count_after}.")
-        return 1
-
-    if duplicate_doc.get("doc_url") != pub_url:
-        print(f"      ❌ FAILED: URL mismatch: {duplicate_doc.get('doc_url')} vs {pub_url}")
+        print("      ❌ FAILED: Direct create_google_doc check was not marked cached!")
         return 1
 
     print("      ✅ IDEMPOTENCY VERIFIED: Duplicate approval yielded the identical Doc with 0 re-creations!")
@@ -209,7 +228,7 @@ async def main() -> int:
     print(f"      Doc URL:           {pub_url}")
     print(f"      Idempotency Cache: {list(published_docs.keys())}")
     if mode == "stub":
-        print(f"      Creations:         {doc_v1_count_after} (exactly 1 doc created despite double approval)")
+        print(f"      Creations:         {doc_v_count_after} (exactly 1 doc created despite double approval)")
     print("\n🎉 PHASE 3 ACCEPTANCE CRITERIA MET SUCCESSFULLY!")
     return 0
 

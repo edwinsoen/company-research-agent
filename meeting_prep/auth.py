@@ -61,9 +61,10 @@ def get_drive_session(tool_context: Optional[Any] = None) -> Any:
 
     Precedence:
     1. Delegated user credential from Agent Identity Auth Manager / ToolContext.
-    2. SPIFFE JWT / SVID token via environment (SPIFFE_TOKEN / SPIFFE_SVID_PATH) exchanged via STS.
-    3. Workload Identity Federation (WIF) / external account configuration via GOOGLE_APPLICATION_CREDENTIALS.
-    4. Fallback: Google Cloud Application Default Credentials (for local testing when SPIFFE daemon is simulated).
+    2. Explicit Delegated User Token or SPIFFE JWT / SVID token via environment (DRIVE_USER_TOKEN / SPIFFE_TOKEN / SPIFFE_SVID_PATH).
+    3. Local Delegated User Token File (.drive_user_token.json or DRIVE_CREDENTIALS_FILE).
+    4. Workload Identity Federation (WIF) / external account configuration via GOOGLE_APPLICATION_CREDENTIALS.
+    Raises RuntimeError if no valid delegated or SPIFFE/WIF credential exists (no silent ADC fallback per HLD §12A.1, §12A.3).
     """
     # 1. Delegated credential from ToolContext (Agent Identity Auth Manager)
     if tool_context:
@@ -163,19 +164,11 @@ def get_drive_session(tool_context: Optional[Any] = None) -> Any:
         except Exception as e:
             logger.warning("Failed to load external account credential from %s: %s", gac_path, e)
 
-    # 4. Standard AuthorizedSession fallback
-    try:
-        from google.auth import default
-        from google.auth.transport.requests import AuthorizedSession
-
-        try:
-            creds, _ = default(scopes=["https://www.googleapis.com/auth/drive.file"])
-        except Exception:
-            creds, _ = default(scopes=["https://www.googleapis.com/auth/drive"])
-        return AuthorizedSession(creds)
-    except Exception as e:
-        logger.error("Unable to resolve credentials for Google Drive: %s", e)
-        raise RuntimeError(
-            f"No valid SPIFFE or delegated credentials found for Google Drive API. "
-            f"Set SPIFFE_TOKEN, configure WIF credentials, or run in stub mode (DRIVE_CLIENT_MODE=stub). Error: {e}"
-        ) from e
+    # 4. Fail loudly rather than silently falling back to ambient ADC / service account (HLD §12A.1, §12A.3).
+    logger.error("Unable to resolve delegated credentials for Google Drive")
+    raise RuntimeError(
+        "No valid delegated user credentials or SPIFFE/WIF identity found for Google Drive API. "
+        "Per HLD §12A, Drive writes require user-delegated authority rather than ambient service account ADC. "
+        "To publish live docs, run `scripts/auth_drive_user.py` to authenticate, set DRIVE_USER_TOKEN, "
+        "or run in stub mode (DRIVE_CLIENT_MODE=stub)."
+    )

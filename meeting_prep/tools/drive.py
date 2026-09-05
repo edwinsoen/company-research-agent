@@ -13,6 +13,7 @@ import os
 import re
 from typing import Any, Optional
 
+import requests
 from google.adk.tools.tool_context import ToolContext
 import tenacity
 
@@ -20,6 +21,21 @@ logger = logging.getLogger(__name__)
 
 # Global tracker for stub mode creation events (useful for idempotency assertions in tests)
 _STUB_CREATION_COUNT: dict[str, int] = {}
+
+
+class DriveError(Exception):
+    """Base exception for Google Drive API operations."""
+    pass
+
+
+class TransientDriveError(DriveError):
+    """Transient error (e.g. 429, 5xx, network timeout) that is safe to retry."""
+    pass
+
+
+class PermanentDriveError(DriveError):
+    """Permanent error (e.g. 400, 403, 404) that should not be retried."""
+    pass
 
 
 def get_stub_creation_count(brief_id: str, version: int) -> int:
@@ -54,14 +70,13 @@ def _get_drive_client_mode() -> str:
 from meeting_prep.auth import get_drive_session
 
 
-@tenacity.retry(
-    stop=tenacity.stop_after_attempt(3),
-    wait=tenacity.wait_exponential(multiplier=1, min=1, max=10),
-    retry=tenacity.retry_if_exception_type(Exception),
-    reraise=True,
-)
 def _upload_google_doc(title: str, markdown: str, tool_context: Optional[ToolContext] = None) -> dict[str, str]:
-    """Upload markdown to Google Drive with mimeType conversion to native Google Doc."""
+    """Upload markdown to Google Drive with mimeType conversion to native Google Doc.
+
+    Non-idempotent create call: does not automatically retry on failure, avoiding duplicate
+    document creation in Google Drive on dropped responses or timeouts (HLD §10.5, §11).
+    Failures fall through to the graceful degradation branch in create_google_doc.
+    """
     import json
 
     session = get_drive_session(tool_context=tool_context)
@@ -85,10 +100,15 @@ def _upload_google_doc(title: str, markdown: str, tool_context: Optional[ToolCon
     )
 
     url = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
-    response = session.post(url, data=body.encode("utf-8"), headers=headers, timeout=30)
+    try:
+        response = session.post(url, data=body.encode("utf-8"), headers=headers, timeout=30)
+    except Exception as err:
+        logger.error("Drive API upload network error: %s", err)
+        raise DriveError(f"Drive API upload network error: {err}") from err
+
     if not response.ok:
         logger.error("Drive API upload error (%s): %s", response.status_code, response.text)
-        raise RuntimeError(f"Drive API upload failed ({response.status_code}): {response.text}")
+        raise DriveError(f"Drive API upload failed ({response.status_code}): {response.text}")
     file_data = response.json()
     doc_id = file_data.get("id")
     doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
@@ -98,8 +118,8 @@ def _upload_google_doc(title: str, markdown: str, tool_context: Optional[ToolCon
 def create_google_doc(
     title: str,
     markdown: str,
-    brief_id: str = "brief-1",
-    version: int = 1,
+    brief_id: str,
+    version: int,
     tool_context: Optional[ToolContext] = None,
 ) -> dict[str, Any]:
     """Create a new Google Doc from brief markdown content with strict idempotency.
@@ -117,7 +137,28 @@ def create_google_doc(
     Returns:
         dict: DocRef with doc_id, doc_url, title, version, and cached status.
     """
-    cache_key = f"{brief_id}:v{version}"
+    canonical_brief_id = brief_id
+    canonical_version = version
+
+    # Derive canonical key deterministically from session state to avoid LLM formatting drift
+    if tool_context and hasattr(tool_context, "state") and tool_context.state:
+        state = tool_context.state
+        resolved = state.get("resolved_entity")
+        if resolved:
+            if isinstance(resolved, dict) and resolved.get("name"):
+                canonical_brief_id = resolved["name"]
+            elif hasattr(resolved, "name") and resolved.name:
+                canonical_brief_id = resolved.name
+        elif state.get("company_input"):
+            canonical_brief_id = state.get("company_input")
+
+        if state.get("draft_version") is not None:
+            try:
+                canonical_version = int(state.get("draft_version"))
+            except (ValueError, TypeError):
+                pass
+
+    cache_key = f"{canonical_brief_id}:v{canonical_version}"
 
     # 1. Idempotency Check in Session State
     if tool_context and hasattr(tool_context, "state"):
@@ -152,13 +193,13 @@ def create_google_doc(
                 "error": f"Drive API error: {str(err)}",
                 "status": "failed",
                 "title": title,
-                "version": version,
-                "brief_id": brief_id,
+                "version": canonical_version,
+                "brief_id": canonical_brief_id,
             }
     else:
         # Stub mode: deterministic ID and URL
-        sanitized_id = re.sub(r"[^a-zA-Z0-9_\-]", "_", brief_id.lower())
-        doc_id = f"mock-doc-{sanitized_id}-v{version}"
+        sanitized_id = re.sub(r"[^a-zA-Z0-9_\-]", "_", canonical_brief_id.lower())
+        doc_id = f"mock-doc-{sanitized_id}-v{canonical_version}"
         doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
         _STUB_CREATION_COUNT[cache_key] = _STUB_CREATION_COUNT.get(cache_key, 0) + 1
 
@@ -166,7 +207,7 @@ def create_google_doc(
         "doc_id": doc_id,
         "doc_url": doc_url,
         "title": title,
-        "version": version,
+        "version": canonical_version,
         "cached": False,
     }
 
@@ -183,11 +224,11 @@ def create_google_doc(
 @tenacity.retry(
     stop=tenacity.stop_after_attempt(3),
     wait=tenacity.wait_exponential(multiplier=1, min=1, max=10),
-    retry=tenacity.retry_if_exception_type(Exception),
+    retry=tenacity.retry_if_exception_type(TransientDriveError),
     reraise=True,
 )
 def _share_drive_file(doc_id: str, email: str, tool_context: Optional[ToolContext] = None) -> None:
-    """Share Google Drive file with recipient email address."""
+    """Share Google Drive file with recipient email address with bounded retries on transient errors."""
     session = get_drive_session(tool_context=tool_context)
 
     url = f"https://www.googleapis.com/drive/v3/files/{doc_id}/permissions"
@@ -196,10 +237,25 @@ def _share_drive_file(doc_id: str, email: str, tool_context: Optional[ToolContex
         "type": "user",
         "emailAddress": email,
     }
-    response = session.post(url, json=payload, timeout=15)
-    if not response.ok:
-        logger.error("Drive API share error (%s): %s", response.status_code, response.text)
-        raise RuntimeError(f"Drive API share failed ({response.status_code}): {response.text}")
+    try:
+        response = session.post(url, json=payload, timeout=15)
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as err:
+        logger.warning("Drive API share network timeout/error: %s", err)
+        raise TransientDriveError(f"Drive API share network error: {err}") from err
+    except Exception as err:
+        logger.error("Drive API share unexpected request error: %s", err)
+        raise PermanentDriveError(f"Drive API share error: {err}") from err
+
+    if response.ok:
+        return
+
+    status = response.status_code
+    if status == 429 or 500 <= status < 600:
+        logger.warning("Drive API share transient error (%s): %s", status, response.text)
+        raise TransientDriveError(f"Drive API share transient error ({status}): {response.text}")
+    else:
+        logger.error("Drive API share permanent error (%s): %s", status, response.text)
+        raise PermanentDriveError(f"Drive API share permanent error ({status}): {response.text}")
 
 
 def share_doc(

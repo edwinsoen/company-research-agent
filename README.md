@@ -24,7 +24,8 @@ flowchart TD
     end
     
     Researchers --> ParallelResearchers
-    ParallelResearchers --> Composer[composer]
+    ParallelResearchers --> Delta[delta_agent\nMemory & Prior Delta]
+    Delta --> Composer[composer]
     Composer --> HITL_Gate2[approve_brief\nGate 2 Pause]
     
     HITL_Gate2 -- "Revise + Comment" --> Router[refinement_router\nLLM Classifier]
@@ -41,6 +42,7 @@ flowchart TD
    - **`root_coordinator`**: Ingests free-text prompts, extracts target company, focus topics, and recipient lists.
    - **`entity_disambiguator`**: Verifies company domain and business entity.
    - **Parallel Researchers**: Concurrently executes company profile analysis, recent news retrieval, and user-specified focus area deep dives.
+   - **`delta_agent`**: Queries memory bank for prior briefs and calculates incremental deltas/changes since the last meeting.
    - **`composer`**: Synthesizes findings into an executive markdown briefing with structured sections.
 
 2. **Human-In-The-Loop (HITL) Workflow (Phase 2)**:
@@ -141,27 +143,34 @@ Fast, offline, and deterministic. Simulates Drive API file creation and permissi
 DRIVE_CLIENT_MODE=stub .venv/bin/python scripts/run_phase3.py
 ```
 
-### Mode B: Live Google Drive (Delegated User Access)
+### Mode B: Live Google Drive (Local Development Stand-in)
 
-Publishes a real Google Doc directly to a Google Drive account.
+Publishes a real Google Doc directly to a user's Google Drive account.
 
-Per HLD §12A.2, Drive writes use **user-delegated authority** (creating documents owned by the user, rather than by a shared bot service account).
+> [!NOTE]
+> Mode B provides a local development stand-in using user-authorized OAuth credentials. Full HLD §12A.2 delegation via GEAP Agent Identity Auth Manager (where credentials are encrypted and injected at the Agent Gateway without touching agent code) lands in Phase 4.
+>
+> Per HLD §12A.1 and §12A.3, running with `DRIVE_CLIENT_MODE=drive` without valid delegated credentials fails loudly with a `RuntimeError` rather than silently falling back to ambient gcloud ADC or workstation service accounts.
 
-1. **Authorize your Drive account**:
+**Credential Options**:
+1. **Interactive browser OAuth** (recommended for local dev):
    ```bash
    .venv/bin/python scripts/auth_drive_user.py
    ```
-   *(Signs in via browser and saves credentials to `.drive_user_token.json`)*.
+   *(Signs in via browser and saves credentials to `.drive_user_token.json` or path in `DRIVE_CREDENTIALS_FILE`)*.
 
-   *Alternatively, export a token directly:*
+2. **Direct delegated token**:
    ```bash
    export DRIVE_USER_TOKEN="<oauth-access-token>"
    ```
 
-2. **Run with live publishing enabled**:
-   ```bash
-   DRIVE_CLIENT_MODE=drive .venv/bin/python scripts/run_phase3.py
-   ```
+3. **SPIFFE / Workload Identity Federation (WIF)**:
+   Set `SPIFFE_TOKEN` (or path via `SPIFFE_SVID_PATH`), `GCP_PROJECT_NUMBER`, and optionally `SPIFFE_WIF_POOL` and `SPIFFE_WIF_PROVIDER` for STS token exchange, or point `GOOGLE_APPLICATION_CREDENTIALS` to an external account configuration.
+
+**Run with live publishing**:
+```bash
+DRIVE_CLIENT_MODE=drive .venv/bin/python scripts/run_phase3.py
+```
 
 ---
 
