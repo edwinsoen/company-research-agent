@@ -78,6 +78,7 @@ def create_profile_researcher() -> LlmAgent:
     """Create the profile_researcher agent."""
     return LlmAgent(
         name="profile_researcher",
+        description="Researches company profile, business model, scale, funding, valuation, and executive leadership.",
         model=MODEL_NAME,
         instruction=PROFILE_RESEARCHER_INSTRUCTION,
         tools=[google_search],
@@ -91,6 +92,7 @@ def create_news_researcher() -> LlmAgent:
     """Create the news_researcher agent."""
     return LlmAgent(
         name="news_researcher",
+        description="Researches recent major announcements, news, product launches, and developments in the last 90 days.",
         model=MODEL_NAME,
         instruction=NEWS_RESEARCHER_INSTRUCTION,
         tools=[google_search],
@@ -104,6 +106,7 @@ def create_focus_researcher() -> LlmAgent:
     """Create the focus_researcher agent."""
     return LlmAgent(
         name="focus_researcher",
+        description="Researches custom user-specified strategic focus areas for the target company.",
         model=MODEL_NAME,
         instruction=FOCUS_RESEARCHER_INSTRUCTION,
         tools=[google_search],
@@ -117,9 +120,11 @@ def create_research_parallel() -> ParallelAgent:
     """Create the ParallelAgent grouping all three concurrent researchers."""
     return ParallelAgent(
         name="research_parallel",
+        description="Runs all three researchers (profile, news, focus) concurrently to refresh all research areas.",
         sub_agents=[
             create_profile_researcher(),
             create_news_researcher(),
             create_focus_researcher(),
         ],
     )
+

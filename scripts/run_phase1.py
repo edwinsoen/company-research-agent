@@ -17,7 +17,7 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-from meeting_prep.agents.root import create_root_coordinator
+from meeting_prep.app import app
 from meeting_prep.config import MODEL_NAME, PROJECT_ID, LOCATION
 
 
@@ -29,12 +29,11 @@ async def main():
     print(f"   Model:    {MODEL_NAME}")
     print("=" * 70)
 
-    # 1. Initialize root agent and in-memory session service
-    print("\n[1/4] Initializing agent graph and in-memory session service...")
-    root_agent = create_root_coordinator()
+    # 1. Initialize session service
+    print("\n[1/4] Initializing app and in-memory session service...")
     session_service = InMemorySessionService()
 
-    app_name = "meeting_prep"
+    app_name = app.name
     user_id = "test_executive"
 
     # Pre-seed initial state for target company 'Stripe'
@@ -57,8 +56,7 @@ async def main():
 
     # 2. Build runner
     runner = Runner(
-        app_name=app_name,
-        agent=root_agent,
+        app=app,
         session_service=session_service,
     )
 
@@ -72,6 +70,7 @@ async def main():
 
     event_count = 0
     subagents_seen = set()
+    gate_call = None
 
     async for event in runner.run_async(
         user_id=user_id,
@@ -96,6 +95,44 @@ async def main():
                     first_line = part.text.strip().split("\n")[0][:70]
                     if first_line:
                         print(f"      💬 [{agent_name}]: {first_line}")
+
+        lr_ids = getattr(event, "long_running_tool_ids", None)
+        if lr_ids and not getattr(event, "partial", False) and content and content.parts:
+            for part in content.parts:
+                fc = getattr(part, "function_call", None)
+                if fc and fc.id in lr_ids:
+                    gate_call = (fc.id, fc.name, fc.args or {})
+
+    # If paused at Gate 2 (approve_brief), send auto-approval to complete pipeline
+    if gate_call and gate_call[1] == "approve_brief":
+        call_id, func_name, _ = gate_call
+        print(f"\n      Gate 2 pause detected ({func_name}). Resuming with auto-approval to reach publisher...")
+        approve_msg = types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id=call_id,
+                        name=func_name,
+                        response={"status": "approved", "comment": None},
+                    )
+                )
+            ],
+        )
+        async for event in runner.run_async(
+            user_id=user_id,
+            session_id=session.id,
+            new_message=approve_msg,
+        ):
+            event_count += 1
+            agent_name = getattr(event, "author", None) or "system"
+            subagents_seen.add(agent_name)
+            content = getattr(event, "content", None)
+            if content and hasattr(content, "parts"):
+                for part in content.parts:
+                    if getattr(part, "function_call", None):
+                        fc = part.function_call
+                        print(f"      🔧 [{agent_name}] Tool Call: {fc.name}({json.dumps(fc.args or {})[:80]}...)")
 
     print(f"\n[3/4] Pipeline completed. Total events: {event_count}")
     print(f"      Agents observed: {', '.join(sorted(subagents_seen))}")

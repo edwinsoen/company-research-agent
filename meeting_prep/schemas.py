@@ -3,6 +3,7 @@
 Source of truth: docs/hld.md §8 (Session state schema).
 """
 
+from enum import Enum
 from typing import Optional
 from pydantic import BaseModel, Field
 
@@ -85,3 +86,30 @@ class DocRef(BaseModel):
     doc_url: str = Field(description="Web URL of the published Google Doc.")
     title: str = Field(description="Title of the published document.")
     version: int = Field(default=1, description="Brief version published.")
+
+
+class RefinementTarget(str, Enum):
+    """Target research area for refinement."""
+
+    RESEARCH_PROFILE = "research_profile"
+    RESEARCH_NEWS = "research_news"
+    RESEARCH_FOCUS = "research_focus"
+    ALL = "all"
+
+
+class RefinementRouting(BaseModel):
+    """Routing classification and directive emitted by refinement_router."""
+
+    target: RefinementTarget = Field(
+        description="Target research section: 'research_profile', 'research_news', 'research_focus', or 'all'."
+    )
+    directive: str = Field(
+        description="Specific search and research directive formulated from the user's review comment."
+    )
+    confidence: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Classification confidence score between 0.0 and 1.0.",
+    )
+

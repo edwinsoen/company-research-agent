@@ -19,6 +19,9 @@ Inputs from research:
 - Recent news findings: {research_news}
 - Focus area findings: {research_focus}
 - Delta summary: {delta_summary}
+- Prior draft (if refining): {brief_draft?}
+- Refinement directive (if refining): {refinement_directive?}
+- Refinement target (if refining): {refinement_target?}
 
 Requirements:
 1. Synthesize ONLY from the provided structured findings. Do not hallucinate external claims.
@@ -39,8 +42,37 @@ Requirements:
    ## 4. Strategic Focus Areas
    (Synthesize findings from research_focus. If no custom focus areas were set or findings are empty, note "*Standard profile requested; no custom focus areas specified.*")
 
-4. Write the final markdown brief to your response. Keep it executive-ready, objective, and well-formatted.
+4. REFINEMENT MODE (When Prior Draft and Refinement Directive are present):
+   - Update ONLY the specific section targeted by the refinement directive/target using the refreshed research findings.
+   - Leave ALL OTHER sections byte-identical to the prior draft.
+5. Output the complete markdown brief directly in your response. Keep it executive-ready, objective, and well-formatted.
 """
+
+
+async def save_composer_draft_artifact(callback_context):
+    """Save the generated brief_draft as a versioned artifact in ArtifactService (HLD §7.2, §9.2)."""
+    state = callback_context.state
+    brief_draft = state.get("brief_draft")
+    if not brief_draft:
+        return None
+
+    current_version = int(state.get("draft_version", 0) or 0)
+    new_version = current_version + 1
+    state["draft_version"] = new_version
+
+    filename = f"brief_draft_v{new_version}.md"
+    try:
+        from google.genai import types
+        part = types.Part.from_text(text=brief_draft)
+        await callback_context.save_artifact(
+            filename=filename,
+            artifact=part,
+            custom_metadata={"draft_version": new_version},
+        )
+    except Exception:
+        # Fallback if artifact service is not configured in runner
+        pass
+    return None
 
 
 def create_composer() -> LlmAgent:
@@ -49,5 +81,8 @@ def create_composer() -> LlmAgent:
         name="composer",
         model=MODEL_NAME,
         instruction=COMPOSER_INSTRUCTION,
+        tools=[],
         output_key="brief_draft",
+        after_agent_callback=save_composer_draft_artifact,
     )
+

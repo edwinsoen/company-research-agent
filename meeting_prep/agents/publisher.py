@@ -31,6 +31,23 @@ Instructions:
 """
 
 
+def check_approval_before_publish(callback_context):
+    """Ensure publisher only runs if brief was explicitly approved by the human reviewer (HLD §9.4, §10.1)."""
+    decision = callback_context.state.get("approval_decision") or {}
+    if isinstance(decision, dict):
+        status = decision.get("status")
+    else:
+        status = getattr(decision, "status", None)
+
+    if status != "approved":
+        from google.genai import types
+        return types.Content(
+            role="model",
+            parts=[types.Part.from_text(text="Publishing skipped: executive brief was not approved by human reviewer.")],
+        )
+    return None
+
+
 def create_publisher() -> LlmAgent:
     """Create the publisher agent."""
     return LlmAgent(
@@ -38,6 +55,6 @@ def create_publisher() -> LlmAgent:
         model=MODEL_NAME,
         instruction=PUBLISHER_INSTRUCTION,
         tools=[create_google_doc, share_doc],
-        output_key="published_doc_url",
+        before_agent_callback=check_approval_before_publish,
         before_model_callback=enable_server_side_tools_callback,
     )
