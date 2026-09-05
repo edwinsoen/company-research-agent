@@ -135,7 +135,9 @@ async def run_pipeline(
                 if raw_input.isdigit() and 1 <= int(raw_input) <= len(candidates):
                     choice = int(raw_input)
             except (EOFError, KeyboardInterrupt):
-                pass
+                print("\n\n⚠️ Input cancelled. Leaving session paused at disambiguation gate.")
+                curr = await session_service.get_session(app_name=app.name, user_id=user_id, session_id=session.id)
+                return curr.state
 
             selected = candidates[choice - 1] if candidates else {}
             print(f"   Selected: {selected.get('name')}")
@@ -163,26 +165,34 @@ async def run_pipeline(
             print(draft)
             print("=" * 72)
 
-            action = "a"
+            action = ""
             try:
                 action = input("\nDecision: [A]pprove & Publish, or [R]evise with feedback? [a/r]: ").strip().lower()
             except (EOFError, KeyboardInterrupt):
-                pass
+                print("\n\n⚠️ Input cancelled. Leaving session paused at draft review gate.")
+                curr = await session_service.get_session(app_name=app.name, user_id=user_id, session_id=session.id)
+                return curr.state
 
             if action.startswith("r"):
                 comment = ""
                 try:
                     comment = input("Enter revision feedback: ").strip()
                 except (EOFError, KeyboardInterrupt):
-                    comment = "Please verify the latest business numbers."
+                    print("\n\n⚠️ Input cancelled. Leaving session paused at draft review gate.")
+                    curr = await session_service.get_session(app_name=app.name, user_id=user_id, session_id=session.id)
+                    return curr.state
                 if not comment:
                     comment = "Please verify and update recent figures."
 
                 decision = {"status": "revise", "comment": comment}
                 print(f"\n🔄 Resuming with revision feedback: \"{comment}\"")
-            else:
+            elif action.startswith("a"):
                 decision = {"status": "approved", "comment": None}
                 print("\n✅ Resuming with APPROVAL. Proceeding to publish...")
+            else:
+                print(f"\n⚠️ Input '{action}' cancelled or invalid. Leaving session paused at draft review gate.")
+                curr = await session_service.get_session(app_name=app.name, user_id=user_id, session_id=session.id)
+                return curr.state
 
             next_message = types.Content(
                 role="user",

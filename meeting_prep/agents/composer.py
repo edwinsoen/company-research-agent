@@ -6,7 +6,6 @@ Source: docs/hld.md §7.2
 
 from google.adk.agents import LlmAgent
 from meeting_prep.config import MODEL_NAME
-from meeting_prep.tools.artifact import save_draft_artifact
 
 COMPOSER_INSTRUCTION = """\
 You are an executive intelligence briefing composer.
@@ -46,10 +45,34 @@ Requirements:
 4. REFINEMENT MODE (When Prior Draft and Refinement Directive are present):
    - Update ONLY the specific section targeted by the refinement directive/target using the refreshed research findings.
    - Leave ALL OTHER sections byte-identical to the prior draft.
-5. Save the generated brief:
-   - Call the `save_draft_artifact` tool passing the complete markdown brief string.
-   - Output the final markdown brief to your response. Keep it executive-ready, objective, and well-formatted.
+5. Output the complete markdown brief directly in your response. Keep it executive-ready, objective, and well-formatted.
 """
+
+
+async def save_composer_draft_artifact(callback_context):
+    """Save the generated brief_draft as a versioned artifact in ArtifactService (HLD §7.2, §9.2)."""
+    state = callback_context.state
+    brief_draft = state.get("brief_draft")
+    if not brief_draft:
+        return None
+
+    current_version = int(state.get("draft_version", 0) or 0)
+    new_version = current_version + 1
+    state["draft_version"] = new_version
+
+    filename = f"brief_draft_v{new_version}.md"
+    try:
+        from google.genai import types
+        part = types.Part.from_text(text=brief_draft)
+        await callback_context.save_artifact(
+            filename=filename,
+            artifact=part,
+            custom_metadata={"draft_version": new_version},
+        )
+    except Exception:
+        # Fallback if artifact service is not configured in runner
+        pass
+    return None
 
 
 def create_composer() -> LlmAgent:
@@ -58,7 +81,8 @@ def create_composer() -> LlmAgent:
         name="composer",
         model=MODEL_NAME,
         instruction=COMPOSER_INSTRUCTION,
-        tools=[save_draft_artifact],
+        tools=[],
         output_key="brief_draft",
+        after_agent_callback=save_composer_draft_artifact,
     )
 

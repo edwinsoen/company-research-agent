@@ -116,8 +116,8 @@ async def run_suite_a() -> bool:
     # -------------------------------------------------------------
     # LEG 2: Revision Feedback -> Targeted Rerun -> Gate 2 pause v2
     # -------------------------------------------------------------
-    print("\n[A.2] Starting Leg 2: Resuming with feedback naming NO section: 'The funding and valuation numbers feel out of date'...")
-    revision_feedback = "The funding and valuation numbers feel out of date. Please update them."
+    revision_feedback = "their pricing seems stale, they moved off per-seat to usage tiers"
+    print(f"\n[A.2] Starting Leg 2: Resuming with feedback naming NO section: '{revision_feedback}'...")
     resume_msg1 = types.Content(
         role="user",
         parts=[
@@ -170,13 +170,18 @@ async def run_suite_a() -> bool:
     call_id_v2, func_name_v2, args_v2 = gate2
     print(f"      ✅ Gate 2 paused on Draft v2: {func_name_v2} (id={call_id_v2})")
 
-    # Check draft_version increment
+    # Check draft_version increment and refinement_target in session state
     s2 = await session_service.get_session(app_name=app.name, user_id=user_id, session_id=session.id)
     v2_val = s2.state.get("draft_version")
+    ref_target = s2.state.get("refinement_target")
     print(f"      Session state draft_version after refinement: {v2_val}")
+    print(f"      Session state refinement_target: {ref_target}")
+    if ref_target not in ("research_profile", "profile_researcher"):
+        print(f"      ❌ FAILED: Expected refinement_target in ('research_profile', 'profile_researcher'), got: {ref_target}")
+        return False
 
     # -------------------------------------------------------------
-    # LEG 3: Approve Draft v2 -> Loop Termination via exit_loop -> Publish
+    # LEG 3: Approve Draft v2 -> Loop Termination via escalate -> Publish
     # -------------------------------------------------------------
     print("\n[A.3] Starting Leg 3: Resuming with APPROVAL for Draft v2...")
     approve_msg = types.Content(
@@ -305,6 +310,11 @@ async def run_suite_b() -> bool:
     if not resolved or not resolved.get("name"):
         print("      ❌ FAILED: resolved_entity missing or empty in session state.")
         return False
+
+    if not next_gate or next_gate[1] != "approve_brief":
+        print(f"      ❌ FAILED: Expected pipeline to advance to Gate 2 ('approve_brief'), got: {next_gate}")
+        return False
+    print(f"      ✅ Suite B advanced cleanly to Gate 2: {next_gate[1]} (id={next_gate[0]})")
 
     print("\n✨ SUITE B PASSED: Conditional disambiguation gate verified successfully!")
     return True

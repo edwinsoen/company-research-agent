@@ -5,9 +5,9 @@ Source: docs/hld.md §7.2
 """
 
 from google.adk.agents import LlmAgent, LoopAgent
-from google.adk.tools import AgentTool, exit_loop
+from google.adk.tools import AgentTool
 from meeting_prep.config import MODEL_NAME, enable_server_side_tools_callback
-from meeting_prep.schemas import ApprovalDecision
+from meeting_prep.schemas import ApprovalDecision, RefinementRouting, RefinementTarget
 from meeting_prep.tools.hitl import approve_brief
 from meeting_prep.agents.composer import create_composer
 from meeting_prep.agents.researchers import (
@@ -26,50 +26,93 @@ Current draft:
 
 Instructions:
 1. If you have not yet called `approve_brief`, call the `approve_brief` tool passing the draft string.
-2. When the tool response arrives with the human review decision:
-   - If status is 'approved': Call the `exit_loop` tool to exit the refinement loop and proceed to publishing. Also emit structured ApprovalDecision with status='approved'.
-   - If status is 'revise': Do NOT call `exit_loop`. Emit structured ApprovalDecision with status='revise' and comment set to the user's feedback.
+2. When the tool response arrives with the human review decision, emit structured ApprovalDecision.
 """
+
+
+def handle_approval_tool_callback(tool, args, tool_context, tool_response=None, **kwargs):
+    """Handle human decision returned by approve_brief long-running tool.
+
+    On approval, sets escalate = True to exit the LoopAgent deterministically (HLD §7.2).
+    """
+    if tool.name == "approve_brief" and isinstance(tool_response, dict):
+        tool_context.actions.state_delta["approval_decision"] = tool_response
+        if tool_response.get("status") == "approved":
+            tool_context.actions.escalate = True
+    return None
+
+
+def handle_approval_agent_callback(callback_context):
+    """Check approval_decision in state. On approval, set escalate = True to exit LoopAgent."""
+    decision = callback_context.state.get("approval_decision") or {}
+    if isinstance(decision, dict):
+        status = decision.get("status")
+    else:
+        status = getattr(decision, "status", None)
+
+    if status == "approved":
+        callback_context.actions.escalate = True
+        from google.genai import types
+        return types.Content(
+            role="model",
+            parts=[types.Part.from_text(text="Executive brief approved. Exiting refinement loop.")],
+        )
+    return None
+
 
 REFINEMENT_ROUTER_INSTRUCTION = """\
 You are an intelligent refinement routing agent.
 
 Your role is to analyze revision feedback from the user, determine which specific research area or section needs updating, and invoke the appropriate researcher tool.
 
-User review comment:
-{approval_decision.comment}
+User review decision and feedback:
+{approval_decision}
 
 Available research tools:
-- `profile_researcher`: Business model, leadership, company scale, funding, valuation.
+- `profile_researcher`: Business model, pricing models, leadership, company scale, funding, valuation.
 - `news_researcher`: Recent 90-day announcements, launches, events, partnerships.
 - `focus_researcher`: Custom requested focus topics.
-- `research_parallel`: If feedback affects multiple areas, is general, or classification confidence is low.
+- `research_parallel`: If feedback affects multiple areas, is general, or classification confidence is low (< 0.8).
 
 Instructions:
 1. Classify the user comment to determine the target section:
-   - If the comment relates to business profile, funding, leadership, or company metrics -> Call `profile_researcher`.
+   - If the comment relates to business profile, pricing models, funding, leadership, or company metrics -> Call `profile_researcher`.
    - If the comment relates to news, recent announcements, acquisitions, or launches -> Call `news_researcher`.
    - If the comment relates to user-specific focus areas -> Call `focus_researcher`.
-   - If the comment is general, touches multiple areas, or you are unsure -> Call `research_parallel`.
+   - If the comment is general, touches multiple areas, or confidence is low (< 0.8) -> Call `research_parallel`.
 2. Pass a clear search request to the tool explaining what needs to be investigated based on the user's feedback.
-3. State your directive and target in your final response.
+3. After the research tool completes, provide your final routing classification using the required structured schema with target, directive, and confidence.
 """
 
 
-def sync_refinement_target(callback_context):
-    """Ensure refinement_target and refinement_directive are synchronized in session state."""
+def sync_routing_to_state(callback_context):
+    """Extract validated RefinementRouting and synchronize refinement_target and refinement_directive into session state."""
     state = callback_context.state
-    comment = (state.get("approval_decision") or {}).get("comment", "").lower()
+    routing = state.get("refinement_routing")
+    if not routing:
+        return None
 
-    if "refinement_target" not in state or not state["refinement_target"]:
-        if any(w in comment for w in ["funding", "valuation", "profile", "model", "size", "employee", "founder", "ceo"]):
-            state["refinement_target"] = "research_profile"
-        elif any(w in comment for w in ["news", "recent", "launch", "partnership", "acquisition", "quarter", "month", "announce"]):
-            state["refinement_target"] = "research_news"
-        elif any(w in comment for w in ["focus", "custom", "special"]):
-            state["refinement_target"] = "research_focus"
-        else:
-            state["refinement_target"] = "all"
+    if isinstance(routing, dict):
+        target = routing.get("target")
+        directive = routing.get("directive", "")
+        confidence = float(routing.get("confidence", 1.0))
+    else:
+        target = getattr(routing, "target", "all")
+        directive = getattr(routing, "directive", "")
+        confidence = float(getattr(routing, "confidence", 1.0))
+
+    if hasattr(target, "value"):
+        target = target.value
+    elif isinstance(target, str) and target.startswith("RefinementTarget."):
+        target = target.split(".")[-1].lower()
+
+    # Fallback to all if classification confidence is low (HLD §7.2)
+    if confidence < 0.8:
+        target = "all"
+
+    state["refinement_target"] = target
+    state["refinement_directive"] = directive
+    return None
 
 
 def create_approval_gate() -> LlmAgent:
@@ -78,7 +121,9 @@ def create_approval_gate() -> LlmAgent:
         name="approval_gate",
         model=MODEL_NAME,
         instruction=APPROVAL_GATE_INSTRUCTION,
-        tools=[approve_brief, exit_loop],
+        tools=[approve_brief],
+        after_tool_callback=handle_approval_tool_callback,
+        after_agent_callback=handle_approval_agent_callback,
         output_schema=ApprovalDecision,
         output_key="approval_decision",
         before_model_callback=enable_server_side_tools_callback,
@@ -97,8 +142,9 @@ def create_refinement_router() -> LlmAgent:
         model=MODEL_NAME,
         instruction=REFINEMENT_ROUTER_INSTRUCTION,
         tools=[profile_tool, news_tool, focus_tool, all_tool],
-        output_key="refinement_directive",
-        after_agent_callback=sync_refinement_target,
+        output_schema=RefinementRouting,
+        output_key="refinement_routing",
+        after_agent_callback=sync_routing_to_state,
         before_model_callback=enable_server_side_tools_callback,
     )
 
