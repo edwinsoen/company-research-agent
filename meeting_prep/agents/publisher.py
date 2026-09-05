@@ -55,7 +55,6 @@ def create_publisher() -> LlmAgent:
         model=MODEL_NAME,
         instruction=PUBLISHER_INSTRUCTION,
         tools=[create_google_doc, share_doc],
-        output_key="published_doc_url",
         before_agent_callback=check_approval_before_publish,
         before_model_callback=enable_server_side_tools_callback,
     )

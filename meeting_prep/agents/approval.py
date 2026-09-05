@@ -90,6 +90,7 @@ def sync_routing_to_state(callback_context):
     state = callback_context.state
     routing = state.get("refinement_routing")
     if not routing:
+        state["refinement_target"] = "all"
         return None
 
     if isinstance(routing, dict):

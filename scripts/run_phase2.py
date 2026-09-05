@@ -176,8 +176,8 @@ async def run_suite_a() -> bool:
     ref_target = s2.state.get("refinement_target")
     print(f"      Session state draft_version after refinement: {v2_val}")
     print(f"      Session state refinement_target: {ref_target}")
-    if ref_target not in ("research_profile", "profile_researcher"):
-        print(f"      ❌ FAILED: Expected refinement_target in ('research_profile', 'profile_researcher'), got: {ref_target}")
+    if ref_target != "research_profile":
+        print(f"      ❌ FAILED: Expected refinement_target == 'research_profile', got: {ref_target}")
         return False
 
     # -------------------------------------------------------------
@@ -218,8 +218,8 @@ async def run_suite_a() -> bool:
     s3 = await session_service.get_session(app_name=app.name, user_id=user_id, session_id=session.id)
     pub_url = s3.state.get("published_doc_url")
     print(f"      Published doc URL: {pub_url}")
-    if not pub_url:
-        print("      ❌ FAILED: published_doc_url not found in session state.")
+    if not pub_url or not pub_url.startswith("https://"):
+        print(f"      ❌ FAILED: Expected valid published_doc_url starting with 'https://', got: {pub_url}")
         return False
 
     print("\n✨ SUITE A PASSED: Approval gate, targeted rerun, and loop escalation verified successfully!")

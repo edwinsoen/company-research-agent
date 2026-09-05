@@ -175,14 +175,15 @@ async def run_pipeline(
 
             if action.startswith("r"):
                 comment = ""
-                try:
-                    comment = input("Enter revision feedback: ").strip()
-                except (EOFError, KeyboardInterrupt):
-                    print("\n\n⚠️ Input cancelled. Leaving session paused at draft review gate.")
-                    curr = await session_service.get_session(app_name=app.name, user_id=user_id, session_id=session.id)
-                    return curr.state
-                if not comment:
-                    comment = "Please verify and update recent figures."
+                while not comment:
+                    try:
+                        comment = input("Enter revision feedback: ").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        print("\n\n⚠️ Input cancelled. Leaving session paused at draft review gate.")
+                        curr = await session_service.get_session(app_name=app.name, user_id=user_id, session_id=session.id)
+                        return curr.state
+                    if not comment:
+                        print("Revision feedback cannot be empty. Please specify what needs updating (or press Ctrl-C to abort).")
 
                 decision = {"status": "revise", "comment": comment}
                 print(f"\n🔄 Resuming with revision feedback: \"{comment}\"")
