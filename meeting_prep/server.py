@@ -3,13 +3,18 @@
 Implements two-leg execution with non-blocking pauses for Human-In-The-Loop (HITL)
 gates, with pending-call recovery directly from session events (no auxiliary database).
 
+Note: Per-request user_token passing is a local development and testing stand-in
+for end-user delegation. Production deployments rely on the Agent Identity Auth Manager /
+ToolContext credentials per HLD §12A.2. Raw credentials are kept in transient in-memory
+mapping during execution and are never persisted to session state or backing stores.
+
 Endpoints:
 - POST /briefs: Runs Leg 1 until HITL gate pause or completion.
 - POST /briefs/{id}/decision: Runs Leg 2 by posting FunctionResponse to resume execution.
 - GET /briefs/{id}: Retrieves current session state and brief metadata.
 - GET /health: Health check endpoint.
 
-Source: docs/hld.md §10.2, §10.3, §12.2
+Source: docs/hld.md §10.2, §10.3, §12.2, §12A.2
 """
 
 import logging
@@ -21,6 +26,7 @@ from google.genai import types
 from pydantic import BaseModel, Field
 
 from meeting_prep.app import app as adk_app
+from meeting_prep.auth import set_session_delegated_token
 from meeting_prep.config import (
     MODEL_NAME,
     PROJECT_ID,
@@ -54,7 +60,7 @@ class CreateBriefRequest(BaseModel):
 
 
 class DecisionRequest(BaseModel):
-    status: Optional[str] = Field(default="approved", description="Decision status: 'approved' or 'revise'.")
+    status: str = Field(description="Decision status: 'approved' or 'revise'.")
     comment: Optional[str] = Field(default=None, description="Optional revision instructions.")
     candidate: Optional[dict[str, Any]] = Field(
         default=None, description="Optional selected entity candidate if resolving disambiguation."
@@ -158,15 +164,13 @@ async def create_brief(req: CreateBriefRequest):
     or completion.
     """
     user_id = req.user_id or "executive_user"
-    init_state: dict[str, Any] = {}
-    if req.user_token:
-        init_state["delegated_drive_token"] = req.user_token
-
     session = await session_service.create_session(
         app_name=adk_app.name,
         user_id=user_id,
-        state=init_state,
+        state={},
     )
+    if req.user_token:
+        set_session_delegated_token(session.id, req.user_token)
 
     user_msg = types.Content(
         role="user",
@@ -240,9 +244,9 @@ async def submit_decision(session_id: str, decision: DecisionRequest, user_id: O
 
     call_id, func_name, _ = pending_call
 
-    # If user provided a delegated token, store in session state for downstream tools
-    if decision.user_token and hasattr(session, "state"):
-        session.state["delegated_drive_token"] = decision.user_token
+    # If user provided a delegated token, store in transient in-memory session store (HLD §12A.2)
+    if decision.user_token:
+        set_session_delegated_token(session.id, decision.user_token)
 
     # Build response payload matching the pending tool contract
     if func_name == "request_disambiguation":

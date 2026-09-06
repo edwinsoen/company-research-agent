@@ -56,14 +56,38 @@ def _exchange_spiffe_jwt_with_sts(
         return None
 
 
+# In-memory mapping for transient user-delegated tokens during active sessions (HLD §12A.2)
+# Avoids persisting sensitive raw OAuth credentials in backing session stores (Agent Engine Sessions).
+_SESSION_DELEGATED_TOKENS: dict[str, str] = {}
+
+
+def set_session_delegated_token(session_id: str, token: Optional[str]) -> None:
+    """Store transient user-delegated token in memory for session duration (HLD §12A.2)."""
+    if token:
+        _SESSION_DELEGATED_TOKENS[session_id] = token
+    else:
+        _SESSION_DELEGATED_TOKENS.pop(session_id, None)
+
+
+def get_session_delegated_token(session_id: str) -> Optional[str]:
+    """Retrieve transient user-delegated token for session if present."""
+    return _SESSION_DELEGATED_TOKENS.get(session_id)
+
+
+def clear_session_delegated_token(session_id: str) -> None:
+    """Remove transient user-delegated token for session."""
+    _SESSION_DELEGATED_TOKENS.pop(session_id, None)
+
+
 def get_drive_session(tool_context: Optional[Any] = None) -> Any:
     """Resolve an authenticated session for Google Drive based on SPIFFE or delegated identity.
 
     Precedence:
     1. Delegated user credential from Agent Identity Auth Manager / ToolContext.
-    2. Explicit Delegated User Token or SPIFFE JWT / SVID token via environment (DRIVE_USER_TOKEN / SPIFFE_TOKEN / SPIFFE_SVID_PATH).
-    3. Local Delegated User Token File (.drive_user_token.json or DRIVE_CREDENTIALS_FILE).
-    4. Workload Identity Federation (WIF) / external account configuration via GOOGLE_APPLICATION_CREDENTIALS.
+    2. Transient in-memory delegated token for session (local dev stand-in per HLD §12A.2).
+    3. Explicit Delegated User Token or SPIFFE JWT / SVID token via environment (DRIVE_USER_TOKEN / SPIFFE_TOKEN / SPIFFE_SVID_PATH).
+    4. Local Delegated User Token File (.drive_user_token.json or DRIVE_CREDENTIALS_FILE).
+    5. Workload Identity Federation (WIF) / external account configuration via GOOGLE_APPLICATION_CREDENTIALS.
     Raises RuntimeError if no valid delegated or SPIFFE/WIF credential exists (no silent ADC fallback per HLD §12A.1, §12A.3).
     """
     # 1. Delegated credential from ToolContext (Agent Identity Auth Manager)
@@ -91,7 +115,16 @@ def get_drive_session(tool_context: Optional[Any] = None) -> Any:
             except Exception as err:
                 logger.debug("tool_context.get_credential check: %s", err)
 
-        # Check session state for auth token
+        # Check transient in-memory store for session (local dev stand-in; keeps tokens out of persistent session state)
+        sess = getattr(tool_context, "session", None)
+        session_id = getattr(sess, "id", None) or getattr(tool_context, "session_id", None)
+        if session_id:
+            token = get_session_delegated_token(session_id)
+            if token:
+                logger.info("Using transient delegated drive token from in-memory session store")
+                return SpiffeCredentialsSession(token)
+
+        # Fallback check in session state if populated
         if hasattr(tool_context, "state") and tool_context.state:
             token = tool_context.state.get("delegated_drive_token")
             if token:

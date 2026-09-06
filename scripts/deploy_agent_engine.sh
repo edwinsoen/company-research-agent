@@ -23,8 +23,12 @@ export DEPLOYMENT_ENV="cloud"
 export GOOGLE_GENAI_USE_VERTEXAI="true"
 export ARTIFACT_BUCKET="${ARTIFACT_BUCKET}"
 
-# Generate meeting_prep/.env so ADK container packaging includes deployed environment variables
-cat <<EOF > meeting_prep/.env
+# Write deployment environment variables to a temporary file passed via --env_file
+# to avoid truncating or leaving behind artifacts in meeting_prep/.env
+ENV_FILE="$(mktemp)"
+trap 'rm -f "${ENV_FILE}"' EXIT
+
+cat > "${ENV_FILE}" <<EOF
 DEPLOYMENT_ENV=cloud
 GOOGLE_GENAI_USE_VERTEXAI=true
 ARTIFACT_BUCKET=${ARTIFACT_BUCKET}
@@ -36,6 +40,7 @@ adk deploy agent_engine \
   --location="${REGION}" \
   --otel_to_cloud \
   --artifact_service_uri="gs://${ARTIFACT_BUCKET}" \
+  --env_file="${ENV_FILE}" \
   meeting_prep
 
 echo "✓ Deployment submitted to Vertex AI Agent Engine successfully."

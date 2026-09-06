@@ -120,6 +120,30 @@ class TestServer(unittest.TestCase):
         self.assertEqual(derive_brief_status({}, None), "failed")
         self.assertEqual(derive_brief_status({"brief_draft": "# Draft"}, None), "failed")
 
+    def test_decision_requires_status(self):
+        # DecisionRequest requires 'status' explicitly (no defaulting to 'approved')
+        response = self.client.post(
+            "/briefs/any-session-id/decision",
+            json={"user_id": "test_user"},
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_transient_delegated_token(self):
+        from meeting_prep.auth import (
+            set_session_delegated_token,
+            get_session_delegated_token,
+            clear_session_delegated_token,
+        )
+
+        test_sess = "session-test-token-123"
+        self.assertIsNone(get_session_delegated_token(test_sess))
+
+        set_session_delegated_token(test_sess, "mock-delegated-bearer-token")
+        self.assertEqual(get_session_delegated_token(test_sess), "mock-delegated-bearer-token")
+
+        clear_session_delegated_token(test_sess)
+        self.assertIsNone(get_session_delegated_token(test_sess))
+
 
 if __name__ == "__main__":
     unittest.main()

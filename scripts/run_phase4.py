@@ -1,6 +1,6 @@
-"""Phase 4 REST API & Two-Leg HITL Verification Runner.
+"""Phase 4 In-Process REST API Verification Runner.
 
-Verifies the REST API contract and HITL pause/resume flow (HLD §10.3, §12.2):
+Verifies the FastAPI REST API contract and HITL pause/resume flow (HLD §10.3, §12.2):
 1. GET /health returns service status.
 2. POST /briefs starts Leg 1 execution and pauses at Gate 2 (approve_brief) with no active connection held.
 3. GET /briefs/{id} retrieves current paused session status and draft payload with strict user scoping.
@@ -8,22 +8,18 @@ Verifies the REST API contract and HITL pause/resume flow (HLD §10.3, §12.2):
    and completes publishing.
 5. Response returns status == 'completed' with valid published doc_url.
 
-Execution modes:
-- Hermetic / In-Process (default, for CI & local tests): Uses FastAPI TestClient in stub Drive mode.
-- Live Endpoint: Pass --live <URL> or set LIVE_ENDPOINT_URL=<URL> to verify against a deployed server.
+Runs hermetically in-process via FastAPI TestClient in stub Drive mode for CI and local testing.
+To verify against deployed Agent Engine endpoints (adk api_server), see scripts/verify_deployed_runtime.py.
 
 Usage:
     .venv/bin/python scripts/run_phase4.py
-    .venv/bin/python scripts/run_phase4.py --live http://localhost:8000
 """
 
-import argparse
 import asyncio
 import json
 import os
 import sys
 
-import requests
 from fastapi.testclient import TestClient
 
 from meeting_prep.config import MODEL_NAME, PROJECT_ID, LOCATION
@@ -31,46 +27,16 @@ from meeting_prep.server import server
 from meeting_prep.tools.drive import reset_stub_creation_counts
 
 
-class LiveRestClient:
-    """Simple wrapper over requests.Session presenting the same interface as TestClient."""
-
-    def __init__(self, base_url: str):
-        self.base_url = base_url.rstrip("/")
-        self.session = requests.Session()
-
-    def get(self, path: str, **kwargs):
-        return self.session.get(f"{self.base_url}{path}", **kwargs)
-
-    def post(self, path: str, **kwargs):
-        return self.session.post(f"{self.base_url}{path}", **kwargs)
-
-
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Phase 4 REST Verification Runner")
-    parser.add_argument(
-        "--live",
-        nargs="?",
-        const=os.getenv("LIVE_ENDPOINT_URL", "http://localhost:8000"),
-        default=os.getenv("LIVE_ENDPOINT_URL"),
-        help="Target live deployed base URL (e.g. http://localhost:8000 or Cloud Run endpoint).",
-    )
-    args = parser.parse_args()
-
-    live_url = args.live
-    mode_label = f"Live Endpoint ({live_url})" if live_url else "Hermetic In-Process (TestClient)"
-
     print("=" * 75)
-    print("🚀 Meeting Prep Copilot — Phase 4 REST API & Runtime Verification")
-    print(f"   Mode:     {mode_label}")
+    print("🚀 Meeting Prep Copilot — Phase 4 REST API In-Process Verification")
     print(f"   Project:  {PROJECT_ID} | Region: {LOCATION} | Model: {MODEL_NAME}")
     print("=" * 75)
 
-    if live_url:
-        client = LiveRestClient(live_url)
-    else:
-        os.environ["DRIVE_CLIENT_MODE"] = "stub"
-        reset_stub_creation_counts()
-        client = TestClient(server)
+    os.environ["DRIVE_CLIENT_MODE"] = "stub"
+    reset_stub_creation_counts()
+
+    client = TestClient(server)
 
     # 1. Health check
     print("\n[1/4] Testing GET /health...")
