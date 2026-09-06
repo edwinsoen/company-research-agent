@@ -69,7 +69,7 @@ Instructions:
    - If explicit focus areas/recipients are provided in the prompt, pass them as overrides to initialize_briefing_session.
    - If NOT specified in the prompt, pass None or empty list so preloaded preferences in session state are preserved.
 3. Call `initialize_briefing_session` with `company_input`, `focus_areas`, and `recipients` to record them into session state.
-4. Hand off directly to `brief_pipeline` to perform research, synthesis, approval, and publishing.
+4. After calling `initialize_briefing_session`, output a brief confirmation message (e.g. "Session initialized for <company>. Proceeding with research.") and stop. Do not call any other tools.
 """
 
 
