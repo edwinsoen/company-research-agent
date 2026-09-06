@@ -229,7 +229,7 @@ class RedactionFilter(logging.Filter):
 # -----------------------------------------------------------------------------
 
 class RedactionPlugin(BasePlugin):
-    """ADK plugin ensuring tool arguments and state interactions are privacy-safe."""
+    """ADK plugin ensuring tool execution outputs are sanitized of PII and secrets before reaching the agent."""
 
     def __init__(self, pipeline: Optional[RedactionPipeline] = None) -> None:
         super().__init__(name="redaction_plugin")
@@ -242,7 +242,7 @@ class RedactionPlugin(BasePlugin):
         tool_args: dict[str, Any],
         tool_context: ToolContext,
     ) -> Optional[dict[str, Any]]:
-        # Redact any accidental raw secrets logged or passed through tool args
+        # Returning None preserves exact arguments for tool execution
         return None
 
     async def after_tool_callback(
@@ -253,4 +253,8 @@ class RedactionPlugin(BasePlugin):
         tool_context: ToolContext,
         result: dict[str, Any],
     ) -> Optional[dict[str, Any]]:
-        return None
+        """Sanitize sensitive secrets and raw PII from tool outputs before passing to agent context."""
+        if not result or not isinstance(result, dict):
+            return None
+        sanitized = self.pipeline.redact_data(result)
+        return sanitized if isinstance(sanitized, dict) else result

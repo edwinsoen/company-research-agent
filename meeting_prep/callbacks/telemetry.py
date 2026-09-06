@@ -15,6 +15,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import os
 import sys
 import time
 from typing import Any, Optional
@@ -95,12 +96,58 @@ class JsonTraceFormatter(logging.Formatter):
         return json.dumps(sanitized, ensure_ascii=False)
 
 
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
+
+
+_TELEMETRY_CONFIGURED = False
+
+
+def configure_telemetry(
+    project_id: Optional[str] = None,
+    export_to_cloud: Optional[bool] = None,
+) -> TracerProvider:
+    """Ensure an OpenTelemetry SDK TracerProvider is registered so spans and trace contexts are recorded.
+
+    If no concrete SDK provider is registered, initializes TracerProvider and optionally attaches
+    CloudTraceSpanExporter when running in Google Cloud or when export_to_cloud is True.
+    """
+    global _TELEMETRY_CONFIGURED
+    current_provider = trace.get_tracer_provider()
+    if not isinstance(current_provider, TracerProvider):
+        provider = TracerProvider()
+        proj = project_id or PROJECT_ID or os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("PROJECT_ID")
+        should_export_cloud = export_to_cloud
+        if should_export_cloud is None:
+            should_export_cloud = (
+                os.getenv("DEPLOYMENT_ENV", "").lower() == "cloud"
+                or os.getenv("ENABLE_CLOUD_TRACE", "").lower() == "true"
+            )
+        if should_export_cloud and proj:
+            try:
+                from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
+                exporter = CloudTraceSpanExporter(project_id=proj)
+                provider.add_span_processor(BatchSpanProcessor(exporter))
+            except Exception as err:
+                logger.warning("Could not initialize CloudTraceSpanExporter: %s", err)
+
+        trace.set_tracer_provider(provider)
+        _TELEMETRY_CONFIGURED = True
+        return provider
+    return current_provider
+
+
 _LOGGING_CONFIGURED = False
 
 
 def configure_logging(level: int = logging.INFO, project_id: Optional[str] = None) -> None:
     """Configure structured JSON logging with trace correlation on stdout."""
     global _LOGGING_CONFIGURED
+    proj = project_id or PROJECT_ID or os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("PROJECT_ID")
+
+    # Ensure an SDK TracerProvider is active so log records correlate with real trace/span IDs
+    configure_telemetry(project_id=proj)
+
     if _LOGGING_CONFIGURED:
         return
 
@@ -113,7 +160,7 @@ def configure_logging(level: int = logging.INFO, project_id: Optional[str] = Non
 
     stream_handler = logging.StreamHandler(sys.stdout)
     stream_handler.setLevel(level)
-    stream_handler.setFormatter(JsonTraceFormatter(project_id=project_id))
+    stream_handler.setFormatter(JsonTraceFormatter(project_id=proj))
     stream_handler.addFilter(RedactionFilter())
 
     root_logger.addHandler(stream_handler)

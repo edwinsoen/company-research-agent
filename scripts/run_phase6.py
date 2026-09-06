@@ -41,6 +41,7 @@ from meeting_prep.app import app
 from meeting_prep.callbacks.telemetry import (
     JsonTraceFormatter,
     configure_logging,
+    configure_telemetry,
     record_hitl_wait_span,
     format_provenance_table,
 )
@@ -80,11 +81,10 @@ async def main() -> int:
     os.environ["DRIVE_CLIENT_MODE"] = "stub"
     reset_stub_creation_counts()
 
-    # 1. Configure OpenTelemetry in-memory trace exporter
+    # 1. Configure OpenTelemetry in-memory trace exporter via shipped configure_telemetry
+    provider = configure_telemetry(project_id=PROJECT_ID or "test-project")
     span_exporter = InMemorySpanExporter()
-    tracer_provider = TracerProvider()
-    tracer_provider.add_span_processor(SimpleSpanProcessor(span_exporter))
-    trace.set_tracer_provider(tracer_provider)
+    provider.add_span_processor(SimpleSpanProcessor(span_exporter))
 
     # 2. Configure log capture with JsonTraceFormatter and RedactionFilter
     log_stream = io.StringIO()
@@ -254,6 +254,21 @@ async def main() -> int:
     hitl_span = hitl_spans[0]
     print(f"      HITL Wait Span Duration:      {hitl_span.attributes.get('hitl.wait_duration_s')}s")
     print(f"      HITL Wait Decision Status:    {hitl_span.attributes.get('hitl.decision_status')}")
+
+    # Check subagent span attributes (HLD §13.2)
+    subagent_spans = [s for s in spans if "subagent.name" in (s.attributes or {})]
+    print(f"      Subagent Spans with Custom Attributes: {len(subagent_spans)}")
+    if not subagent_spans:
+        print("      ❌ FAILED: No subagent spans found with 'subagent.name' attribute.")
+        return 1
+
+    for sub_span in subagent_spans:
+        sub_name = sub_span.attributes.get("subagent.name")
+        for req_attr in ("subagent.name", "subagent.model", "subagent.latency_ms"):
+            if req_attr not in sub_span.attributes:
+                print(f"      ❌ FAILED: Subagent span '{sub_name}' missing attribute '{req_attr}'")
+                return 1
+    print(f"      ✅ Verified custom subagent attributes (name, model, latency_ms) across spans.")
 
     # Check session state provenance
     provenance = final_state.get("brief_provenance") or {}

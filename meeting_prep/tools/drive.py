@@ -325,13 +325,14 @@ def share_doc(
     failed_results: dict[str, str] = {}
     start_time = time.perf_counter()
 
+    redacted_emails = [redact_email(e) for e in emails]
     log_intent(
         logger,
         "share_doc",
         f"Attempting to share Google Doc '{doc_id}' with {len(emails)} recipients",
         doc_id=doc_id,
         recipient_count=len(emails),
-        recipients=emails,
+        recipients=redacted_emails,
     )
 
     for raw_email in emails:
@@ -357,6 +358,8 @@ def share_doc(
 
     duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
     status_label = "SUCCESS" if not failed_results else ("PARTIAL_SUCCESS" if shared_results else "FAILED")
+    redacted_shared = {redact_email(k): v for k, v in shared_results.items()}
+    redacted_failed = {redact_email(k): v for k, v in failed_results.items()}
     log_outcome(
         logger,
         "share_doc",
@@ -366,8 +369,8 @@ def share_doc(
         doc_id=doc_id,
         success_count=len(shared_results),
         failure_count=len(failed_results),
-        shared=shared_results,
-        failed=failed_results,
+        shared=redacted_shared,
+        failed=redacted_failed,
     )
 
     return {

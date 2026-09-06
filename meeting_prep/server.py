@@ -26,6 +26,7 @@ from google.genai import types
 from pydantic import BaseModel, Field
 
 from meeting_prep.app import app as adk_app
+from meeting_prep.callbacks.telemetry import configure_logging
 from meeting_prep.auth import (
     set_session_delegated_token,
     clear_session_delegated_token,
@@ -39,6 +40,7 @@ from meeting_prep.config import (
     get_memory_service,
 )
 
+configure_logging()
 logger = logging.getLogger(__name__)
 
 server = FastAPI(

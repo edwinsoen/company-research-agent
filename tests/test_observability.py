@@ -217,6 +217,54 @@ class TestObservability(unittest.TestCase):
         self.assertIn("2.14s", table)
         self.assertIn("TOTAL PIPELINE LATENCY", table)
 
+    def test_redaction_plugin_after_tool_callback(self):
+        """Verify RedactionPlugin actively sanitizes tool output dictionaries."""
+        import asyncio
+        from meeting_prep.telemetry.redaction import RedactionPlugin
+
+        plugin = RedactionPlugin()
+        tool_output = {
+            "status": "success",
+            "access_token": "secret_token_val_123",
+            "recipients": ["user.name@partner-domain.com"],
+            "recipient_results": {"user.name@partner-domain.com": "delivered"},
+            "host_ip": "192.168.1.50",
+        }
+
+        # Run async after_tool_callback
+        sanitized = asyncio.run(plugin.after_tool_callback(
+            tool=None,
+            tool_args={},
+            tool_context=None,
+            result=tool_output,
+        ))
+
+        self.assertIsNotNone(sanitized)
+        self.assertEqual(sanitized["status"], "success")
+        self.assertEqual(sanitized["access_token"], "[REDACTED_SECRET]")
+        self.assertEqual(sanitized["recipients"], ["u*******e@partner-domain.com"])
+        self.assertIn("u*******e@partner-domain.com", sanitized["recipient_results"])
+        self.assertNotIn("user.name@partner-domain.com", sanitized["recipient_results"])
+        self.assertEqual(sanitized["host_ip"], "[IP_REDACTED]")
+
+    def test_configure_logging_installs_tracer_provider(self):
+        """Verify configure_logging registers an SDK TracerProvider and creates recording spans."""
+        from meeting_prep.callbacks.telemetry import configure_logging
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+
+        configure_logging(project_id="test-proj")
+        provider = trace.get_tracer_provider()
+        self.assertIsInstance(provider, TracerProvider)
+
+        tracer = trace.get_tracer("test.tracer")
+        with tracer.start_as_current_span("active_test_span") as span:
+            self.assertTrue(span.is_recording())
+            ctx = span.get_span_context()
+            self.assertTrue(ctx.is_valid)
+            self.assertNotEqual(ctx.trace_id, 0)
+            self.assertNotEqual(ctx.span_id, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
