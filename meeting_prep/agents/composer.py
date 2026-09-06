@@ -82,10 +82,10 @@ def prepare_composer_before_agent(callback_context: Any) -> None:
         agent.model = baseline_model
 
     # Clear per-run grounding counters and flags so refinement loops start fresh
-    state.pop("composer_model", None)
-    state.pop("grounding_attempts", None)
-    state.pop("grounding_correction", None)
-    state.pop("grounding_retry_needed", None)
+    state["composer_model"] = None
+    state["grounding_attempts"] = 0
+    state["grounding_correction"] = None
+    state["grounding_retry_needed"] = False
 
     before_agent_telemetry(callback_context)
 
