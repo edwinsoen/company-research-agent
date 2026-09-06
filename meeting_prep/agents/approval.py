@@ -16,6 +16,11 @@ from meeting_prep.agents.researchers import (
     create_focus_researcher,
     create_research_parallel,
 )
+from meeting_prep.callbacks.telemetry import (
+    before_agent_telemetry,
+    after_agent_telemetry,
+    record_router_classification_span,
+)
 
 APPROVAL_GATE_INSTRUCTION = """\
 You are an executive approval gate agent.
@@ -56,6 +61,8 @@ def handle_approval_agent_callback(callback_context):
         status = decision.get("status")
     else:
         status = getattr(decision, "status", None)
+
+    after_agent_telemetry(callback_context)
 
     if status == "approved":
         callback_context.actions.escalate = True
@@ -120,6 +127,15 @@ def sync_routing_to_state(callback_context):
 
     state["refinement_target"] = target
     state["refinement_directive"] = directive
+
+    iteration = int(state.get("refinement_iteration", 1))
+    record_router_classification_span(
+        target=target,
+        confidence=confidence,
+        directive=directive,
+        iteration=iteration,
+    )
+    after_agent_telemetry(callback_context)
     return None
 
 
@@ -130,6 +146,7 @@ def create_approval_gate() -> LlmAgent:
         model=MODEL_NAME,
         instruction=APPROVAL_GATE_INSTRUCTION,
         tools=[approve_brief],
+        before_agent_callback=before_agent_telemetry,
         after_agent_callback=handle_approval_agent_callback,
         output_schema=ApprovalDecision,
         output_key="approval_decision",
@@ -149,6 +166,7 @@ def create_refinement_router() -> LlmAgent:
         model=MODEL_NAME,
         instruction=REFINEMENT_ROUTER_INSTRUCTION,
         tools=[profile_tool, news_tool, focus_tool, all_tool],
+        before_agent_callback=before_agent_telemetry,
         output_schema=RefinementRouting,
         output_key="refinement_routing",
         after_agent_callback=sync_routing_to_state,

@@ -11,11 +11,15 @@ Source: docs/hld.md §10.5, §11, §12A
 import logging
 import os
 import re
+import time
 from typing import Any, Optional
 
 import requests
 from google.adk.tools.tool_context import ToolContext
 import tenacity
+
+from meeting_prep.callbacks.telemetry import log_intent, log_outcome
+from meeting_prep.telemetry.redaction import redact_email
 
 logger = logging.getLogger(__name__)
 
@@ -46,20 +50,6 @@ def get_stub_creation_count(brief_id: str, version: int) -> int:
 def reset_stub_creation_counts() -> None:
     """Reset stub creation counters."""
     _STUB_CREATION_COUNT.clear()
-
-
-def redact_email(email: str) -> str:
-    """Mask email address for privacy-safe logging and tracing (HLD §11)."""
-    if not email or "@" not in email:
-        return "[REDACTED]"
-    parts = email.split("@", 1)
-    username = parts[0]
-    domain = parts[1]
-    if len(username) <= 2:
-        masked_user = username[0] + "*"
-    else:
-        masked_user = username[0] + "*" * (len(username) - 2) + username[-1]
-    return f"{masked_user}@{domain}"
 
 
 def _get_drive_client_mode(tool_context: Optional[ToolContext] = None) -> str:
@@ -165,6 +155,15 @@ def create_google_doc(
                 pass
 
     cache_key = f"{canonical_brief_id}:v{canonical_version}"
+    start_time = time.perf_counter()
+    log_intent(
+        logger,
+        "create_google_doc",
+        f"Initiating Google Doc creation for brief '{canonical_brief_id}' v{canonical_version} (title: '{title}')",
+        brief_id=canonical_brief_id,
+        version=canonical_version,
+        title=title,
+    )
 
     # 1. Idempotency Check in Session State
     if tool_context and hasattr(tool_context, "state"):
@@ -172,10 +171,17 @@ def create_google_doc(
         if cache_key in published_docs:
             cached_doc = dict(published_docs[cache_key])
             cached_doc["cached"] = True
-            logger.info(
-                "Idempotency hit: Document already created for %s. Returning existing URL: %s",
-                cache_key,
-                cached_doc.get("doc_url"),
+            duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+            log_outcome(
+                logger,
+                "create_google_doc",
+                f"Idempotency hit: Document already created for {cache_key}. Returning existing URL: {cached_doc.get('doc_url')}",
+                status="CACHE_HIT",
+                duration_ms=duration_ms,
+                doc_id=cached_doc.get("doc_id"),
+                doc_url=cached_doc.get("doc_url"),
+                brief_id=canonical_brief_id,
+                version=canonical_version,
             )
             if hasattr(tool_context, "actions") and tool_context.actions:
                 tool_context.actions.state_delta["published_doc_url"] = cached_doc.get("doc_url")
@@ -192,8 +198,31 @@ def create_google_doc(
             result = _upload_google_doc(title=title, markdown=markdown, tool_context=tool_context)
             doc_id = result["doc_id"]
             doc_url = result["doc_url"]
+            duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+            log_outcome(
+                logger,
+                "create_google_doc",
+                f"Successfully uploaded and created Google Doc via Drive API: {doc_url}",
+                status="SUCCESS",
+                duration_ms=duration_ms,
+                doc_id=doc_id,
+                doc_url=doc_url,
+                brief_id=canonical_brief_id,
+                version=canonical_version,
+            )
         except Exception as err:
             logger.error("Failed to create Google Doc via Drive API: %s", err, exc_info=True)
+            duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+            log_outcome(
+                logger,
+                "create_google_doc",
+                f"Failed to create Google Doc via Drive API: {err}",
+                status="FAILED",
+                duration_ms=duration_ms,
+                error=str(err),
+                brief_id=canonical_brief_id,
+                version=canonical_version,
+            )
             # Graceful degradation: return structured error rather than unhandled exception
             return {
                 "error": f"Drive API error: {str(err)}",
@@ -208,6 +237,18 @@ def create_google_doc(
         doc_id = f"mock-doc-{sanitized_id}-v{canonical_version}"
         doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
         _STUB_CREATION_COUNT[cache_key] = _STUB_CREATION_COUNT.get(cache_key, 0) + 1
+        duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+        log_outcome(
+            logger,
+            "create_google_doc",
+            f"Created mock Google Doc in stub mode: {doc_url}",
+            status="SUCCESS",
+            duration_ms=duration_ms,
+            doc_id=doc_id,
+            doc_url=doc_url,
+            brief_id=canonical_brief_id,
+            version=canonical_version,
+        )
 
     doc_ref = {
         "doc_id": doc_id,
@@ -282,6 +323,16 @@ def share_doc(
     mode = _get_drive_client_mode(tool_context=tool_context)
     shared_results: dict[str, str] = {}
     failed_results: dict[str, str] = {}
+    start_time = time.perf_counter()
+
+    log_intent(
+        logger,
+        "share_doc",
+        f"Attempting to share Google Doc '{doc_id}' with {len(emails)} recipients",
+        doc_id=doc_id,
+        recipient_count=len(emails),
+        recipients=emails,
+    )
 
     for raw_email in emails:
         email = raw_email.strip()
@@ -303,6 +354,21 @@ def share_doc(
                 shared_results[email] = "success"
             else:
                 failed_results[email] = "invalid_email_format"
+
+    duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+    status_label = "SUCCESS" if not failed_results else ("PARTIAL_SUCCESS" if shared_results else "FAILED")
+    log_outcome(
+        logger,
+        "share_doc",
+        f"Completed sharing doc '{doc_id}': {len(shared_results)} succeeded, {len(failed_results)} failed",
+        status=status_label,
+        duration_ms=duration_ms,
+        doc_id=doc_id,
+        success_count=len(shared_results),
+        failure_count=len(failed_results),
+        shared=shared_results,
+        failed=failed_results,
+    )
 
     return {
         "doc_id": doc_id,

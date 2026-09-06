@@ -8,6 +8,7 @@ from google.adk.agents import LlmAgent
 from meeting_prep.config import MODEL_NAME, enable_server_side_tools_callback
 from meeting_prep.schemas import DeltaSummary
 from meeting_prep.tools.memory import search_memory
+from meeting_prep.callbacks.telemetry import before_agent_telemetry, after_agent_telemetry
 
 DELTA_AGENT_INSTRUCTION = """\
 You are an expert intelligence analyst responsible for computing what has changed since prior briefings on a company.
@@ -37,6 +38,8 @@ def create_delta_agent() -> LlmAgent:
         model=MODEL_NAME,
         instruction=DELTA_AGENT_INSTRUCTION,
         tools=[search_memory],
+        before_agent_callback=before_agent_telemetry,
+        after_agent_callback=after_agent_telemetry,
         output_schema=DeltaSummary,
         output_key="delta_summary",
         before_model_callback=enable_server_side_tools_callback,

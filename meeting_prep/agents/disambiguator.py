@@ -10,6 +10,7 @@ from google.adk.tools import google_search
 from meeting_prep.config import MODEL_NAME, enable_server_side_tools_callback
 from meeting_prep.schemas import ResolvedEntity
 from meeting_prep.tools.hitl import request_disambiguation
+from meeting_prep.callbacks.telemetry import before_agent_telemetry, after_agent_telemetry
 
 DISAMBIGUATOR_INSTRUCTION = """\
 You are an expert entity disambiguation agent for company research.
@@ -35,6 +36,8 @@ def create_entity_disambiguator() -> LlmAgent:
         model=MODEL_NAME,
         instruction=DISAMBIGUATOR_INSTRUCTION,
         tools=[google_search, request_disambiguation],
+        before_agent_callback=before_agent_telemetry,
+        after_agent_callback=after_agent_telemetry,
         output_schema=ResolvedEntity,
         output_key="resolved_entity",
         before_model_callback=enable_server_side_tools_callback,
