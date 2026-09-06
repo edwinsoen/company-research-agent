@@ -177,7 +177,8 @@ async def run_pipeline(
     else:
         session_service = InMemorySessionService()
         artifact_service = InMemoryArtifactService()
-        memory_service = InMemoryMemoryService()
+        from meeting_prep.config import get_memory_service
+        memory_service = get_memory_service()
         session = await session_service.create_session(
             app_name=app.name,
             user_id=user_id,

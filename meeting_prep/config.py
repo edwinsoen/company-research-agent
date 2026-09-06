@@ -164,6 +164,10 @@ def get_memory_service():
     """Return VertexAiMemoryBankService if DEPLOYMENT_ENV=='cloud', else LocalMemoryService."""
     if os.getenv("DEPLOYMENT_ENV", "local").lower() == "cloud":
         from google.adk.memory import VertexAiMemoryBankService
-        return VertexAiMemoryBankService(project=PROJECT_ID, location=LOCATION)
+        agent_engine_id = os.getenv("AGENT_ENGINE_ID")
+        return VertexAiMemoryBankService(
+            project=PROJECT_ID, location=LOCATION, agent_engine_id=agent_engine_id
+        )
     return LocalMemoryService()
+
 

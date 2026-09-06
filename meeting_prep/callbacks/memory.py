@@ -83,6 +83,7 @@ async def save_memory_after_publish(callback_context) -> None:
             "company": company_name,
             "date": current_date,
             "doc_url": doc_url,
+            "ttl": "7776000s",
         },
     )
 
@@ -91,7 +92,9 @@ async def save_memory_after_publish(callback_context) -> None:
         "company": company_name,
         "date": current_date,
         "doc_url": doc_url,
+        "ttl": "7776000s",
     }
+
 
     try:
         res = callback_context.add_memory(memories=[history_entry], custom_metadata=history_metadata)
