@@ -18,7 +18,7 @@ Preparing for external meetings—whether with partners, clients, or vendors—r
 
 ---
 
-## Architecture (Phases 1–5)
+## Architecture (Phases 1–6)
 
 ```mermaid
 flowchart TD
@@ -98,6 +98,13 @@ flowchart TD
      - Turn-start preference preloading on `root_coordinator` via `BriefingPreloadMemoryTool` and `initialize_briefing_session`.
      - Scoped delta retrieval on `delta_agent` via company-scoped `search_memory`, using regex word boundary isolation (`_company_matches`) to avoid cross-company false positives and ISO recency sorting.
    - **Fail-Loud Cloud Placeholder**: `UnconfiguredCloudMemoryService` ensures import safety for `server.py` at boot while raising an explicit `RuntimeError` on read/write if deployed to cloud without a configured `AGENT_ENGINE_ID`.
+
+6. **Observability, Distributed Tracing & Redaction (Phase 6)**:
+   - **Structured JSON Logging**: Cloud Logging-compatible JSON formatting on stdout across all environments with automatic 1:1 trace correlation (`logging.googleapis.com/trace` and `logging.googleapis.com/spanId`).
+   - **Intent vs. Outcome Operational Logging**: Dual-layer operational logging across agents and tools (`log_intent` / `log_outcome`) recording parameters, execution latency (`duration_ms`), and outcome statuses.
+   - **Distributed Tracing (OpenTelemetry)**: Dedicated human wait time spans (`hitl_wait.<gate_name>`) measuring human decision duration separately from agent compute, custom subagent span attributes (`subagent.name`, `subagent.model`, `subagent.latency_ms`), and refinement router classification telemetry.
+   - **Terminal UI Provenance Panel**: Formatted ASCII table summarizing pipeline execution latency, model attribution, and completion status per research section.
+   - **Comprehensive PII & Secret Redaction Pipeline**: Multi-entity sanitization (`RedactionPipeline`, `RedactionFilter`, `RedactionPlugin`) filtering emails, phone numbers, Bearer tokens, API keys, and IP addresses while preserving cloud resource identifiers and semantic version numbers.
 
 ---
 
@@ -214,11 +221,14 @@ Run the standalone verification suites for each phase:
 
 # Phase 5 (Remote Memory Bank): Cross-session retrieval and active polling against deployed Agent Engine
 .venv/bin/python scripts/verify_remote_memory.py [AGENT_ENGINE_ID]
+
+# Phase 6 (Observability & Tracing): Structured JSON logging, Cloud Trace correlation, and PII redaction
+.venv/bin/python scripts/run_phase6.py
 ```
 
 ### 4. Running Unit Tests
 
-Execute the full unit test suite (37 unit tests covering Drive tools, Memory Bank, and REST server):
+Execute the full unit test suite (47 unit tests covering Drive tools, Memory Bank, REST server, distributed tracing, and PII redaction):
 
 ```bash
 .venv/bin/python -m unittest discover -s tests
@@ -317,24 +327,174 @@ Publishes real Google Docs directly to Google Drive with strict idempotency on `
 
 ---
 
-## Observability & Inspection
+## Observability & Inspection (Phase 6)
 
-### 1. Local Graph Topology with `adk web`
+Source of truth: [docs/hld.md](docs/hld.md) §11, §13, §16.
 
-To visualize the multi-agent graph topology and inspect execution traces in the ADK Web UI:
+Meeting Prep Copilot provides end-to-end production observability across all environments (local CLI, FastAPI REST server, and deployed Vertex AI Agent Engine):
+- **Structured JSON Logging**: Cloud Logging-compatible JSON formatting on `stdout` across all runtimes, with 1:1 trace correlation.
+- **Intent vs. Outcome Operational Logging**: Dual-layer operational event pairing tracking parameters, duration (`duration_ms`), and execution status (`outcome_status`).
+- **Distributed Tracing (OpenTelemetry)**: Explicit spans for human review wait times (`hitl_wait.<gate_name>`), subagent execution metrics (`subagent.name`, `subagent.model`, `subagent.latency_ms`), and refinement classification routing.
+- **Terminal UI Provenance Panel**: Formatted ASCII table tracking per-section latency and model attribution.
+- **Multi-Entity PII & Secret Redaction Pipeline**: Defense-in-depth sanitization of tokens, credentials, API keys, phone numbers, and emails across logs and tool data context.
 
-```bash
-.venv/bin/adk web --port 8080 meeting_prep
+---
+
+### 1. Structured JSON Logging & 1:1 Cloud Trace Correlation
+
+All application runtimes (`meeting_prep/app.py`, `meeting_prep/server.py`, `meeting_prep/agent.py`, `meeting_prep/cli.py`) initialize structured logging at module load via `configure_logging()`. Logs are emitted as single-line JSON records formatted by `JsonTraceFormatter`:
+
+```json
+{
+  "timestamp": "2026-09-06T10:28:45.847452+00:00",
+  "severity": "INFO",
+  "message": "OUTCOME: [publisher] (SUCCESS) Agent 'publisher' completed execution in 11165.19ms",
+  "logger": "meeting_prep.callbacks.telemetry",
+  "component": "publisher",
+  "event_type": "outcome",
+  "outcome": "Agent 'publisher' completed execution in 11165.19ms",
+  "outcome_status": "SUCCESS",
+  "duration_ms": 11165.19,
+  "company": "Stripe",
+  "logging.googleapis.com/trace": "projects/<PROJECT_ID>/traces/<TRACE_ID_HEX>",
+  "logging.googleapis.com/spanId": "<SPAN_ID_HEX>",
+  "logging.googleapis.com/trace_sampled": true
+}
 ```
 
-Navigate to `http://localhost:8080/` to explore agent nodes, tool call arguments, and latency breakdowns.
+- **Trace Correlation**: Automatically extracts active trace and span IDs from the OpenTelemetry context (`trace.get_current_span()`). In Google Cloud Logging, this enables direct correlation between logs and trace waterfalls.
+- **Fail-Safe Sanitization**: Every log record passes through `RedactionFilter` before being serialized.
 
-### 2. Cloud Trace & OpenTelemetry
+---
 
-Deployed Agent Engine instances export OpenTelemetry traces directly to Google Cloud Trace (`--otel_to_cloud`), capturing:
-- Concurrent researcher spans in `ParallelAgent`.
-- Dedicated span duration for Human-In-The-Loop pauses.
-- Refinement router classification targets and directives.
+### 2. Dual-Layer Intent vs. Outcome Logging
+
+Operational actions across agents and tools are logged in explicit pairs:
+1. **`INTENT`**: Emitted before starting an operation, capturing context and input parameters:
+   - Tool calls (`search_memory`, `create_google_doc`, `share_doc`, `request_disambiguation`, `approve_brief`).
+   - Agent steps (`profile_researcher`, `news_researcher`, `focus_researcher`, `delta_agent`, `composer`, `publisher`).
+   - Memory Bank writes (`save_memory_after_publish`).
+2. **`OUTCOME`**: Emitted upon completion, capturing duration (`duration_ms`), status (`SUCCESS` / `FAILED`), and operational results:
+   - Tool results (e.g. `doc_id`, `success_count`, `failure_count`).
+   - Agent execution latencies and brief sections updated.
+
+---
+
+### 3. Distributed Tracing Hierarchy & Custom Spans
+
+Built on OpenTelemetry Python SDK. In cloud environments (`DEPLOYMENT_ENV=cloud` or `ENABLE_CLOUD_TRACE=true`), `configure_telemetry()` registers an SDK `TracerProvider` with `CloudTraceSpanExporter` using `BatchSpanProcessor`.
+
+```
+Reasoning Engine Execution (Root Span)
+├── subagent.profile_researcher [subagent.name, subagent.model, subagent.latency_ms]
+├── subagent.news_researcher    [subagent.name, subagent.model, subagent.latency_ms]
+├── subagent.focus_researcher   [subagent.name, subagent.model, subagent.latency_ms]
+├── subagent.delta_agent        [subagent.name, subagent.model, subagent.latency_ms]
+├── subagent.composer           [subagent.name, subagent.model, subagent.latency_ms]
+├── hitl_wait.approve_brief     [hitl.gate_name, hitl.wait_duration_s, hitl.decision_status]
+├── refinement_router           [refinement.target, refinement.confidence, refinement.directive]
+└── subagent.publisher          [subagent.name, subagent.model, subagent.latency_ms]
+```
+
+- **Dedicated HITL Wait Spans**: `record_hitl_wait_span` records a span around human review gates (`hitl_wait.approve_brief`, `hitl_wait.request_disambiguation`). This measures human idle/review time separately from autonomous agent runtime.
+- **Subagent Custom Attributes**: Every researcher and synthesis subagent span carries `subagent.name`, `subagent.model`, and execution latency (`subagent.latency_ms`, `subagent.latency_s`).
+- **Refinement Router Telemetry**: Injects `refinement.target`, `refinement.confidence`, `refinement.directive`, and `refinement.iteration` attributes.
+- **Concurrency Isolation**: Agent start times are scoped by unique context and invocation IDs (`_get_context_start_key`), guaranteeing isolated latency calculations across overlapping concurrent requests.
+
+---
+
+### 4. Terminal UI Provenance Panel
+
+Upon brief completion, the CLI renders an ASCII provenance summary from session state metadata:
+
+```text
+┌──────────────────────────────────────────────────────────────────────┐
+│ SECTION                  │ PRODUCED BY          │ LATENCY  │ STATUS    │
+├──────────────────────────────────────────────────────────────────────┤
+│ Company Profile          │ profile_researcher   │ 5.67s    │ COMPLETED │
+│ Focus Areas              │ focus_researcher     │ 13.23s   │ COMPLETED │
+│ Recent Developments      │ news_researcher      │ 13.90s   │ COMPLETED │
+│ Executive Delta          │ delta_agent          │ 2.51s    │ COMPLETED │
+│ Brief Synthesis          │ composer             │ 9.67s    │ COMPLETED │
+│ Google Doc Publishing    │ publisher            │ 11.17s   │ COMPLETED │
+├──────────────────────────────────────────────────────────────────────┤
+│ TOTAL PIPELINE LATENCY                          │ 56.15s   │ DONE      │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 5. Multi-Entity PII & Secret Redaction Pipeline
+
+Protects sensitive credentials and user data across both logs and agent contexts:
+- **Sanitized Entities**:
+  - **Bearer & OAuth Tokens**: `Bearer [BEARER_TOKEN_REDACTED]`, `ya29.*`
+  - **API Keys**: Google API keys (`AIza*`) and general keys (`AQ.*`)
+  - **Email Addresses**: Preserves domain while masking username (`u*******e@domain.com`)
+  - **Phone Numbers**: International and local formats with standard separators or area code parentheses (`[PHONE_REDACTED]`)
+  - **IPv4 Addresses**: Real IPs masked (`[IP_REDACTED]`) while 4-part semantic versions (`version 1.10.0.1`) are preserved
+  - **Sensitive Keys**: Dictionary keys like `password`, `token`, `secret`, `auth`, `api_key`
+- **Zero False-Positive Precision**: Unhyphenated integer runs (such as GCP project numbers in resource paths `projects/<PROJECT_ID>/locations/...` and Reasoning Engine IDs) and common words (such as `"the token is stale"`) are preserved intact.
+- **ADK `RedactionPlugin`**: Attached to the ADK `App` to sanitize tool result dictionaries in `after_tool_callback` before outputs enter LLM prompt context.
+
+---
+
+### 6. Where to View Traces and Logs in Google Cloud
+
+> **Note**: Replace `<PROJECT_ID>` with your active Google Cloud project ID (e.g. `$(gcloud config get-value project)`).
+
+#### A. Google Cloud Trace Console
+
+View distributed trace waterfalls, subagent parallel branches, and HITL wait durations:
+
+- **Console URL**:
+  ```text
+  https://console.cloud.google.com/traces/list?project=<PROJECT_ID>
+  ```
+- **Navigation**: In the Google Cloud Console, navigate to **Observability / Operations > Trace > Trace list**.
+- **Inspecting Spans**:
+  - Filter by root span or subagent span names (e.g. `hitl_wait.approve_brief`, `meeting_prep.*`).
+  - Click on any trace in the waterfall to view span latency breakdowns and custom attributes (`subagent.latency_ms`, `hitl.wait_duration_s`, `refinement.target`).
+  - **Correlated Logs**: Selecting a span automatically displays its correlated structured JSON log entries in the bottom panel via the embedded trace identifier.
+
+#### B. Google Cloud Logging (Logs Explorer)
+
+View structured operational logs, intent/outcome pairs, and diagnostic events:
+
+- **Console URL**:
+  ```text
+  https://console.cloud.google.com/logs/query?project=<PROJECT_ID>
+  ```
+- **Navigation**: In the Google Cloud Console, navigate to **Observability / Operations > Logging > Logs Explorer**.
+- **Useful Filter Queries**:
+  - **All Intent and Outcome Events**:
+    ```text
+    resource.type="aiplatform.googleapis.com/ReasoningEngine"
+    jsonPayload.event_type=("intent" OR "outcome")
+    ```
+  - **Logs for a Specific Target Company**:
+    ```text
+    resource.type="aiplatform.googleapis.com/ReasoningEngine"
+    jsonPayload.company="Stripe"
+    ```
+  - **Correlate Logs for a Specific Trace ID**:
+    ```text
+    logging.googleapis.com/trace="projects/<PROJECT_ID>/traces/<TRACE_ID_HEX>"
+    ```
+
+#### C. Local Inspection & Verification
+
+- **Interactive Local Visualization (`adk web`)**:
+  ```bash
+  .venv/bin/adk web --port 8080 meeting_prep
+  ```
+  Navigate to `http://localhost:8080/` to inspect agent node graphs, events, and tool invocations.
+
+- **Headless Acceptance Runner**:
+  ```bash
+  .venv/bin/python scripts/run_phase6.py
+  ```
+  Validates all 5 Phase 6 observability criteria in a single headless run (records 70+ structured JSON logs, verifies intent/outcome pairing, confirms 0 PII leaks, validates 50+ OpenTelemetry spans with custom subagent attributes, and renders the UI Provenance Panel).
 
 ---
 
