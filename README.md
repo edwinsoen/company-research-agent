@@ -106,6 +106,20 @@ flowchart TD
    - **Terminal UI Provenance Panel**: Formatted ASCII table summarizing pipeline execution latency, model attribution, and completion status per research section.
    - **Comprehensive PII & Secret Redaction Pipeline**: Multi-entity sanitization (`RedactionPipeline`, `RedactionFilter`, `RedactionPlugin`) filtering emails, phone numbers, Bearer tokens, API keys, and IP addresses while preserving cloud resource identifiers and semantic version numbers.
 
+7. **Orchestration, Model Routing & Security Guardrails (Phase 7)**:
+   - **Strategic Multi-Tier Model Routing**: Optimizes task shape, speed, and inference cost by routing Flash-Lite (`gemini-3.5-flash-lite`) to deterministic agents (`entity_disambiguator`, `approval_gate`, `publisher`), Flash (`gemini-3.7-flash`) to high-volume parallel researchers and router, and Pro (`gemini-3.1-pro-preview`) to complex synthesis and delta reasoning (`delta_agent`, `composer`).
+   - **Dynamic Pro Tier Escalation**: When initial Flash synthesis lacks grounded source citations, `GroundingGuardPlugin` triggers an in-flight Pro retry with corrective directives, tracking token ceilings and emitting telemetry spans.
+   - **Decoupled Runtime Guardrail Plugins (`meeting_prep/plugins/`)**: Global ADK `BasePlugin` implementations decoupled from agent nodes:
+     - `BudgetPlugin`: Prioritized first in the plugin chain to track token counts and model invocations, terminating gracefully with `BudgetExceededError`.
+     - `InjectionGuardPlugin`: Intercepts researcher model outputs (`after_model_callback`) and Gemini Google Search grounding metadata (`LlmResponse.grounding_metadata`) to detect prompt injection vectors, neutralizing payloads to `[REDACTED_POTENTIAL_PROMPT_INJECTION]`.
+     - `RedactionPlugin`: Global PII/secret scrubbing returning `None` when unmodified to preserve subsequent plugin execution chains.
+     - `GroundingGuardPlugin`: Zero-LLM claim-to-citation validator with structural line detection (ignoring tables, blockquotes, code fences, labels) and citation domain matching against researched sources.
+     - `PublishPolicyPlugin`: Hard security gate on Drive tools verifying human review approval in session state, checking recipient email allowlists, and populating the idempotency cache.
+   - **Resilient Multi-Agent Loop & State Lifecycle**:
+     - Isolates human review loop exits to `approval_gate` rather than inner agent escalations, preventing outer loop interruptions.
+     - Handles ADK `State` lifecycle on Vertex AI Reasoning Engine using sentinel writes (`state[key] = None`) to prevent cross-run state pollution without raising errors on non-dictionary storage.
+   - **Proactive User-Delegated Publishing**: Automatically refreshes OAuth access tokens in the CLI before passing them to remote Agent Engine sessions, preventing mid-flight token expiration during live Google Doc creation.
+
 ---
 
 ## Local Development Setup
@@ -228,9 +242,13 @@ Run the standalone verification suites for each phase:
 
 ### 4. Running Unit Tests
 
-Execute the full unit test suite (47 unit tests covering Drive tools, Memory Bank, REST server, distributed tracing, and PII redaction):
+Execute the full unit test suite (71 unit tests covering strategic model routing, runtime guardrail plugins, Drive tools, Memory Bank, REST server, distributed tracing, and PII redaction):
 
 ```bash
+# Run with pytest (recommended):
+.venv/bin/pytest -v tests/
+
+# Or run with unittest:
 .venv/bin/python -m unittest discover -s tests
 ```
 
@@ -500,44 +518,92 @@ View structured operational logs, intent/outcome pairs, and diagnostic events:
 
 ## Phase 7: Orchestration & Logic Enhancements
 
-Phase 7 introduces strategic multi-tier model routing and global runtime security guardrails implemented as ADK Plugins:
+Phase 7 introduces strategic multi-tier model routing, decoupled runtime security guardrails implemented as ADK Plugins, resilient loop orchestration, and automated user-delegated token management:
 
-### 1. Strategic Model Routing (`meeting_prep/models.py`)
-- **Tiering by Task Shape**:
-  - **Flash-Lite** (`gemini-3.5-flash-lite`): `entity_disambiguator`, `approval_gate`, `publisher` (deterministic, structured extraction with fixed schemas).
-  - **Flash** (`gemini-3.7-flash`): `profile_researcher`, `news_researcher`, `focus_researcher`, `refinement_router` (high-volume parallel extractions).
-  - **Pro** (`gemini-3.1-pro-preview`): `delta_agent`, `composer` (genuine synthesis across multi-source findings, delta reasoning, and citation preservation).
-- **Dynamic Escalation**: Composer begins on Flash for fast baseline synthesis. If the grounding check detects unsourced claims, it dynamically escalates to Pro on retry with corrective instructions.
-- **Routing Observability**: Each agent's active model tier is explicitly emitted as an OpenTelemetry span attribute (`subagent.model`).
+### 1. Strategic Multi-Tier Model Routing (`meeting_prep/models.py`)
 
-### 2. Runtime Guardrail Plugins (`meeting_prep/plugins/`)
-Registered globally across the runner via ADK's `App(plugins=[...])`:
-- **`PublishPolicyPlugin`** (`before_tool` on `create_google_doc`, `share_doc`):
-  - Hard gate asserting `approval_decision.status == "approved"`.
-  - Recipient domain validation against `ALLOWED_RECIPIENT_DOMAINS` (defaults to wildcard `*`).
-  - Idempotency key tracking `(brief_id, draft_version)` preventing duplicate document creations.
-- **`GroundingGuardPlugin`** (`after_model` on `composer`):
-  - Deterministic zero-LLM claim line extractor verifying every assertion carries a citation URL present in `research_*` findings.
-  - Controls the 2-iteration retry flow: escalates to Pro tier on attempt 1, surfaces unsourced claim callouts on attempt 2.
-- **`BudgetPlugin`** (`before_model` / `after_model`):
-  - Tracks model calls, prompt tokens, candidate tokens, and total token usage.
-  - Aborts gracefully before model execution if call count (`BUDGET_MAX_MODEL_CALLS`) or token ceiling (`BUDGET_MAX_TOKENS`) is breached.
-  - Natural home for tracking refinement iterations.
-- **`InjectionGuardPlugin`** (`after_tool` on `google_search`):
-  - Scans retrieved web content for instruction-override and prompt-injection patterns.
-  - Sanitizes offending snippets and logs structured security audit events.
-- **`RedactionPlugin`**:
-  - Global PII and credential sanitization engine migrated into `meeting_prep/plugins/redaction.py`.
+Rather than scattering model literals across agent definitions, model assignments are centralized in a declarative routing table mapped to task shape and inference characteristics:
 
-### 3. Verification Suite
-- Comprehensive unit tests:
-  ```bash
-  .venv/bin/pytest -v tests/test_model_routing.py tests/test_guardrail_plugins.py
-  ```
-- Full test suite:
-  ```bash
-  .venv/bin/pytest -v tests/
-  ```
+```python
+# meeting_prep/models.py
+MODEL_ROUTING = {
+    "entity_disambiguator": FLASH_LITE,  # gemini-3.5-flash-lite
+    "profile_researcher":   FLASH,       # gemini-3.7-flash
+    "news_researcher":      FLASH,       # gemini-3.7-flash
+    "focus_researcher":     FLASH,       # gemini-3.7-flash
+    "delta_agent":          PRO,         # gemini-3.1-pro-preview
+    "composer":             PRO,         # gemini-3.1-pro-preview
+    "approval_gate":        FLASH_LITE,  # gemini-3.5-flash-lite
+    "refinement_router":    FLASH,       # gemini-3.7-flash
+    "publisher":            FLASH_LITE,  # gemini-3.5-flash-lite
+}
+```
+
+- **Task Shape & Cost Rationale**:
+  | Tier | Models | Agents | Rationale |
+  |---|---|---|---|
+  | **Flash-Lite** | `gemini-3.5-flash-lite` | `entity_disambiguator`, `approval_gate`, `publisher` | Fast, structured, deterministic tasks with fixed schemas and zero multi-document synthesis requirements. |
+  | **Flash** | `gemini-3.7-flash` | `profile_researcher`, `news_researcher`, `focus_researcher`, `refinement_router` | High-volume parallel research and intent classification. Parallelizing across 3 researchers on Pro would dominate cost; Flash handles grounded extraction into fixed schemas with high concurrency and low latency. |
+  | **Pro** | `gemini-3.1-pro-preview` | `delta_agent`, `composer` | Genuine synthesis across multi-source findings, delta reasoning against historical briefs, and strict citation preservation. |
+
+- **Dynamic Pro Tier Escalation**: The composer initiates synthesis on Flash for speed. If `GroundingGuardPlugin` detects unsourced claims or citation gaps, it triggers a dynamic in-flight retry escalating to Pro with corrective directives, verifying against budget ceilings and emitting OpenTelemetry `call_llm` spans.
+- **Routing Observability**: Each agent emits its active model tier as an OpenTelemetry span attribute (`subagent.model`), enabling live cost and latency tracking per tier.
+
+### 2. Decoupled Runtime Guardrail Plugins (`meeting_prep/plugins/`)
+
+Implemented as ADK `BasePlugin` extensions registered globally on `App(plugins=[...])`. Decoupling policies from agent prompt wording ensures security and governance rules are enforced as runtime invariants across all deployment modes:
+
+```python
+app = App(
+    name="meeting_prep",
+    root_agent=root_coordinator,
+    plugins=[
+        budget_plugin,          # 1. First: Enforces token & call ceilings before LLMs fire
+        injection_guard_plugin, # 2. Scans researcher outputs & search grounding metadata
+        redaction_plugin,       # 3. Sanitizes PII; returns None on untouched data
+        publish_policy_plugin,  # 4. Enforces human approval, domain allowlist, & idempotency
+        grounding_guard_plugin, # 5. Validates citations and drives Pro escalation
+    ],
+    ...
+)
+```
+
+| Plugin | Lifecycle Hook | Target / Behavior |
+|---|---|---|
+| **`BudgetPlugin`** | `before_model`, `after_model` | Priority placement (first). Tracks cumulative model calls and tokens (`prompt_tokens`, `candidates_tokens`, `total_tokens`). Raises `BudgetExceededError` before invocation if `BUDGET_MAX_MODEL_CALLS` or `BUDGET_MAX_TOKENS` is exceeded. |
+| **`InjectionGuardPlugin`** | `after_model`, `after_tool` | Scans researcher model completions and Gemini Google Search grounding metadata (`LlmResponse.grounding_metadata`) for prompt injection / instruction override patterns (e.g., `Ignore all previous instructions`). Neutralizes offending snippets to `[REDACTED_POTENTIAL_PROMPT_INJECTION]` and logs security audit events. |
+| **`RedactionPlugin`** | `after_tool` | Sanitizes credentials, OAuth tokens, API keys, and PII across tool outputs. Returns `None` when content is untouched so ADK's `PluginManager` does not short-circuit downstream plugins in the callback chain. |
+| **`GroundingGuardPlugin`** | `after_model` on `composer` | Zero-LLM claim-to-source validator. Uses structural line detection (ignoring markdown tables, blockquotes, code blocks, bullet labels, and sub-4-word headings) and domain-level URL matching against `research_*` outputs. Governs the 2-stage retry flow: escalates to Pro on attempt 1, appends unsourced claim warnings on attempt 2, and falls back to `_build_warning_draft` if budget or cache is exhausted. Evicts cached requests with a bounded 50-entry cap. |
+| **`PublishPolicyPlugin`** | `before_tool` on `create_google_doc`, `share_doc` | Hard gate enforcing that `approval_decision.status == "approved"` in session state, validates recipient emails against `ALLOWED_RECIPIENT_DOMAINS`, and tracks `(brief_id, draft_version)` in an idempotency cache to prevent duplicate documents. |
+
+### 3. Resilient Orchestration & Control Flow
+
+- **Elimination of Inner Escalation Bugs**: Previous patterns that set `callback_context.actions.escalate = True` in inner agents prematurely broke enclosing `LoopAgent` / `refinement_loop` structures before reaching human review. Loop termination is strictly isolated to human review decisions (`approval_gate`).
+- **ADK `State` Lifecycle Compatibility**: On Vertex AI Reasoning Engine, session state is an ADK `State` instance rather than a mutable Python dictionary, lacking `.pop()` and `__delitem__`. State resets (e.g. `grounding_attempt`, `grounding_correction`, `published_doc`) use sentinel writes (`state[key] = None`) to clear run-specific state cleanly without raising `AttributeError` or leaking counters across loop iterations.
+- **Human-In-The-Loop Review Loop**: The outer refinement loop presents the synthesized brief draft to the reviewer, pauses via `approve_brief`, and branches cleanly:
+  - **Revisions Requested**: `refinement_router` re-runs only the requested researcher, the composer updates the draft, and the gate pauses again.
+  - **Approved**: Execution exits the loop and transitions to `publisher` for document creation.
+
+### 4. Proactive User-Delegated Publishing & CLI Token Management
+
+- **Proactive Token Refresh**: When delegating user OAuth credentials (`DRIVE_CREDENTIALS_FILE` / `.drive_user_token.json`) to remote Reasoning Engine instances, `load_delegated_drive_token()` proactively invokes `creds.refresh(Request())` whenever a `refresh_token` exists. This prevents expired 1-hour access tokens from being forwarded to long-running remote sessions.
+- **Graceful Refresh Fallback**: In the event of a refresh error (e.g. transient network glitch), the CLI logs a warning via `logger` and gracefully falls back to the existing cached access token rather than failing with `NameError` or aborting execution.
+- **Live Cloud Verification**: Verified live on deployed Vertex AI Reasoning Engine (`projects/edwinsoen-l200/locations/us-central1/reasoningEngines/1828942485049573376`), generating formatted Google Docs with live grounding and provenance reporting.
+
+### 5. Verification Suite & Test Coverage
+
+The full test suite consists of **71 unit tests** with 100% pass rate:
+
+```bash
+# Run model routing and guardrail plugin tests:
+.venv/bin/pytest -v tests/test_model_routing.py tests/test_guardrail_plugins.py
+
+# Run Drive tools and delegated token refresh fallback tests:
+.venv/bin/pytest -v tests/test_drive_tools.py
+
+# Run the complete test suite:
+.venv/bin/pytest -v tests/
+```
 
 ---
 

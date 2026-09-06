@@ -624,8 +624,6 @@ Explicitly out of scope. Listed so the boundary reads as a decision, not an omis
 
 **CRM integration and pipeline context.**
 
-**Formal evaluation.** Correctness is vibe-checked against the live web. No golden dataset, no scored eval harness. CI contract tests assert graph structure and tool contracts, not answer quality.
-
 **Brief content quality tuning.** The composer prompt gets one pass.
 
 **Email delivery.** Google Doc only. Email is marginally simpler but leaves nothing to inspect.
