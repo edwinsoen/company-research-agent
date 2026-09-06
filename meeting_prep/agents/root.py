@@ -7,7 +7,6 @@ import re
 from google.adk.agents import LlmAgent, SequentialAgent
 from meeting_prep.config import MODEL_NAME, enable_server_side_tools_callback
 from meeting_prep.tools.memory import (
-    preload_memory,
     preload_memory_tool,
     initialize_briefing_session,
 )
@@ -60,14 +59,15 @@ You are the entry-point coordinator for the Meeting Prep Copilot.
 
 Your task is to parse the user's research request, initialize session state, and hand off to the brief pipeline.
 
+Note: Saved user preferences from prior sessions are automatically preloaded into session state by preload_memory_tool before model execution.
+
 Instructions:
-1. Call `preload_memory` first to retrieve any saved user preferences from prior sessions.
-2. Parse the target company name from the user input.
-3. Check if the user specified any explicit focus areas or recipient emails in their prompt.
-   - If explicit focus areas/recipients are provided in the prompt, use them as overrides.
-   - If NOT specified in the prompt, use the preloaded preferences returned by `preload_memory`.
-4. Call `initialize_briefing_session` with `company_input`, `focus_areas`, and `recipients` to record them into session state.
-5. Hand off directly to `brief_pipeline` to perform research, synthesis, approval, and publishing.
+1. Parse the target company name from the user input.
+2. Check if the user specified any explicit focus areas or recipient emails in their prompt.
+   - If explicit focus areas/recipients are provided in the prompt, pass them as overrides to initialize_briefing_session.
+   - If NOT specified in the prompt, pass None or empty list so preloaded preferences in session state are preserved.
+3. Call `initialize_briefing_session` with `company_input`, `focus_areas`, and `recipients` to record them into session state.
+4. Hand off directly to `brief_pipeline` to perform research, synthesis, approval, and publishing.
 """
 
 
@@ -77,7 +77,7 @@ def create_root_coordinator() -> SequentialAgent:
         name="root_coordinator_step",
         model=MODEL_NAME,
         instruction=ROOT_COORDINATOR_INSTRUCTION,
-        tools=[preload_memory_tool, initialize_briefing_session, preload_memory],
+        tools=[preload_memory_tool, initialize_briefing_session],
         before_model_callback=enable_server_side_tools_callback,
     )
     pipeline = create_brief_pipeline()

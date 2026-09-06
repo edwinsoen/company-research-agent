@@ -6,6 +6,7 @@ import re
 from typing import Any, Optional
 from dotenv import load_dotenv
 from google.adk.memory import InMemoryMemoryService
+from google.adk.memory.base_memory_service import BaseMemoryService
 
 logger = logging.getLogger(__name__)
 
@@ -169,25 +170,54 @@ class LocalMemoryService(InMemoryMemoryService):
         return SearchMemoryResponse(memories=combined[:10])
 
 
+class UnconfiguredCloudMemoryService(BaseMemoryService):
+    """Placeholder service returned when DEPLOYMENT_ENV='cloud' but AGENT_ENGINE_ID is unset.
+
+    Allows server.py and modules to import cleanly at container startup, but raises
+    RuntimeError on first use to ensure misconfigurations fail loudly rather than
+    silently losing state across sessions in an ephemeral local dictionary.
+    """
+
+    def _fail(self) -> None:
+        raise RuntimeError(
+            "AGENT_ENGINE_ID environment variable is not configured. "
+            "Cloud deployments (DEPLOYMENT_ENV='cloud') require a valid Vertex AI Agent Engine "
+            "instance ID for cross-session Memory Bank operations."
+        )
+
+    async def add_memory(self, *args: Any, **kwargs: Any) -> None:
+        self._fail()
+
+    async def search_memory(self, *args: Any, **kwargs: Any) -> Any:
+        self._fail()
+
+    async def add_events_to_memory(self, *args: Any, **kwargs: Any) -> None:
+        self._fail()
+
+    async def add_session_to_memory(self, *args: Any, **kwargs: Any) -> None:
+        self._fail()
+
+
 def get_memory_service():
     """Return VertexAiMemoryBankService if DEPLOYMENT_ENV=='cloud', else LocalMemoryService.
 
     LocalMemoryService provides process-lifetime in-memory persistence for local development.
     In cloud deployments, persistent cross-session memory is backed by Vertex AI Memory Bank.
-    If AGENT_ENGINE_ID is not yet configured, gracefully falls back to LocalMemoryService
-    rather than failing at module import time.
+    If AGENT_ENGINE_ID is not configured in a cloud deployment, returns an UnconfiguredCloudMemoryService
+    that fails loudly on first call rather than silently falling back to a process-local dummy.
     """
     if os.getenv("DEPLOYMENT_ENV", "local").lower() == "cloud":
         agent_engine_id = os.getenv("AGENT_ENGINE_ID")
         if not agent_engine_id:
             logger.warning(
-                "AGENT_ENGINE_ID is not set in environment. Falling back to LocalMemoryService until configured."
+                "AGENT_ENGINE_ID is not set in environment. Cloud memory operations will fail loud on first use."
             )
-            return LocalMemoryService()
+            return UnconfiguredCloudMemoryService()
         from google.adk.memory import VertexAiMemoryBankService
         return VertexAiMemoryBankService(
             project=PROJECT_ID, location=LOCATION, agent_engine_id=agent_engine_id
         )
     return LocalMemoryService()
+
 
 

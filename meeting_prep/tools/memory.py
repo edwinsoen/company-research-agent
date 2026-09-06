@@ -9,6 +9,7 @@ Source of truth: docs/hld.md §9.4 & §9.5
 import inspect
 import json
 import logging
+import re
 from typing import Any, Optional
 
 from google.adk.tools.preload_memory_tool import PreloadMemoryTool
@@ -16,6 +17,23 @@ from google.adk.tools.tool_context import ToolContext
 from typing_extensions import override
 
 logger = logging.getLogger(__name__)
+
+
+def _company_matches(target_company: str, record_company: str) -> bool:
+    """Check whether record_company matches target_company using word boundaries.
+
+    Allows name variants (e.g. 'Meta' vs 'Meta Platforms') while preventing
+    substring collisions (e.g. 'Box' vs 'Boxed').
+    """
+    t = target_company.strip().lower()
+    r = record_company.strip().lower()
+    if not t or not r:
+        return False
+    if t == r:
+        return True
+    pattern_r = rf"\b{re.escape(r)}\b"
+    pattern_t = rf"\b{re.escape(t)}\b"
+    return bool(re.search(pattern_r, t) or re.search(pattern_t, r))
 
 
 async def search_memory(
@@ -80,13 +98,10 @@ async def search_memory(
 
             # Must be a structured brief record containing facts list and company
             if isinstance(facts, list) and record_company:
-                # Enforce company-scoped match
-                if (
-                    target_company.lower() == record_company.lower()
-                    or target_company.lower() in record_company.lower()
-                    or record_company.lower() in target_company.lower()
-                ):
-                    date_str = parsed.get("date") or meta.get("date") or "recent"
+                # Enforce company-scoped match using word boundaries (prevent Box vs Boxed)
+                if _company_matches(target_company, record_company):
+                    # Fall back to empty string so dated records sort above undated records
+                    date_str = parsed.get("date") or meta.get("date") or ""
                     doc_url = parsed.get("doc_url") or meta.get("doc_url") or ""
                     timestamp = getattr(mem, "timestamp", "") or ""
                     matching_entries.append({
@@ -116,7 +131,7 @@ async def search_memory(
     )
     most_recent = matching_entries[0]
     prior_facts = [str(f) for f in most_recent["facts"]]
-    prior_date = most_recent["date"]
+    prior_date = most_recent["date"] or "recent"
     doc_url = most_recent["doc_url"]
 
     logger.info(
@@ -188,6 +203,8 @@ async def preload_memory(
         logger.error("Error preloading memory preferences: %s", err, exc_info=True)
         raise RuntimeError(f"Memory service failure while preloading preferences: {err}") from err
 
+    if hasattr(tool_context, "state") and tool_context.state is not None:
+        tool_context.state["user_preferences"] = prefs
     if hasattr(tool_context, "actions") and tool_context.actions:
         tool_context.actions.state_delta["user_preferences"] = prefs
 
@@ -209,16 +226,13 @@ class BriefingPreloadMemoryTool(PreloadMemoryTool):
         llm_request: Any,
     ) -> None:
         await super().process_llm_request(tool_context=tool_context, llm_request=llm_request)
-        try:
-            await preload_memory(tool_context=tool_context)
-        except Exception as e:
-            logger.warning("BriefingPreloadMemoryTool background preload warning: %s", e)
+        await preload_memory(tool_context=tool_context)
 
 
 preload_memory_tool = BriefingPreloadMemoryTool()
 
 
-def initialize_briefing_session(
+async def initialize_briefing_session(
     company_input: str,
     focus_areas: Optional[list[str]] = None,
     recipients: Optional[list[str]] = None,
@@ -259,6 +273,17 @@ def initialize_briefing_session(
         if (recipients is not None and len(recipients) > 0)
         else existing_prefs.get("recipients", [])
     )
+
+    # If focus_areas or recipients were not supplied in prompt or state, retrieve preloaded preferences from memory
+    if (not final_focus or not final_recipients) and tool_context:
+        try:
+            mem_prefs = await preload_memory(tool_context=tool_context)
+            if not final_focus:
+                final_focus = mem_prefs.get("focus_areas", [])
+            if not final_recipients:
+                final_recipients = mem_prefs.get("recipients", [])
+        except Exception as e:
+            logger.debug("initialize_briefing_session preload exception: %s", e)
 
     if tool_context and hasattr(tool_context, "actions") and tool_context.actions:
         tool_context.actions.state_delta["company_input"] = company_input

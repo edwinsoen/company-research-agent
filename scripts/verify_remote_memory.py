@@ -157,14 +157,35 @@ def main():
     doc_url_1 = final_state1.get("published_doc_url")
     print(f"      Published Doc URL: {doc_url_1}")
 
-    # Give Vertex AI Memory Bank brief ingestion a moment to index (poll with retry)
-    print("      Waiting for Memory Bank indexing (polling with backoff)...")
+    # Poll Vertex AI Memory Bank until the brief record is retrievable
+    print("      Polling Memory Bank until brief record is indexed and retrievable...")
+    from google.adk.memory import VertexAiMemoryBankService
+    import asyncio
+
+    mem_service = VertexAiMemoryBankService(project=PROJECT_ID, location=LOCATION, agent_engine_id=ENGINE_ID)
     poll_start = time.time()
-    while time.time() - poll_start < 20:
-        time.sleep(4)
-        print(f"      ...indexing in progress ({int(time.time() - poll_start)}s elapsed)")
-        if time.time() - poll_start >= 8:
+    indexed = False
+    while time.time() - poll_start < 30:
+        time.sleep(3)
+        res = asyncio.run(mem_service.search_memory(app_name="meeting_prep", user_id=USER_ID, query="Stripe briefing facts"))
+        mems = getattr(res, "memories", None) or []
+        elapsed = int(time.time() - poll_start)
+        print(f"      ...polling Memory Bank ({elapsed}s elapsed, {len(mems)} entries found)")
+        for m in mems:
+            if m.content and m.content.parts:
+                for part in m.content.parts:
+                    text_val = getattr(part, "text", "")
+                    if "Stripe" in text_val:
+                        print(f"      ✅ Memory Bank confirmed indexed and retrievable after {elapsed}s.")
+                        indexed = True
+                        break
+            if indexed:
+                break
+        if indexed:
             break
+
+    if not indexed:
+        print("      ⚠️ Warning: Polling timeout reached before entry was visible in search; proceeding to Session 2...")
 
     # =========================================================================
     # SESSION 2: Returning User Cross-Session Brief

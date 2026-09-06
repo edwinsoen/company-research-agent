@@ -80,7 +80,7 @@ async def save_memory_after_publish(callback_context) -> None:
         ),
         custom_metadata={
             "topic": "company_brief_history",
-            "topics": [{"custom_topic_id": "company_brief_history"}],
+            "topics": [{"custom_memory_topic_label": "company_brief_history"}],
             "company": company_name,
             "date": current_date,
             "doc_url": doc_url,
@@ -90,7 +90,7 @@ async def save_memory_after_publish(callback_context) -> None:
 
     history_metadata = {
         "topic": "company_brief_history",
-        "topics": [{"custom_topic_id": "company_brief_history"}],
+        "topics": [{"custom_memory_topic_label": "company_brief_history"}],
         "company": company_name,
         "date": current_date,
         "doc_url": doc_url,
@@ -162,7 +162,7 @@ async def save_memory_after_publish(callback_context) -> None:
                 ),
                 custom_metadata={
                     "topic": "briefing_preferences",
-                    "topics": [{"custom_topic_id": "briefing_preferences"}],
+                    "topics": [{"custom_memory_topic_label": "briefing_preferences"}],
                 },
             )
             try:
@@ -170,7 +170,7 @@ async def save_memory_after_publish(callback_context) -> None:
                     memories=[prefs_entry],
                     custom_metadata={
                         "topic": "briefing_preferences",
-                        "topics": [{"custom_topic_id": "briefing_preferences"}],
+                        "topics": [{"custom_memory_topic_label": "briefing_preferences"}],
                     },
                 )
                 if inspect.isawaitable(res):

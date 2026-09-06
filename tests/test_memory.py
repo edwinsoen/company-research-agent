@@ -11,18 +11,23 @@ Tests:
 """
 
 import json
+import os
 import unittest
 from unittest.mock import MagicMock
 
 from google.adk.memory.base_memory_service import SearchMemoryResponse
 from google.adk.memory.memory_entry import MemoryEntry
 from google.genai import types
+from vertexai._genai.types import AgentEngineMemoryConfig
 
 from meeting_prep.callbacks.memory import save_memory_after_publish
+from meeting_prep.config import get_memory_service, UnconfiguredCloudMemoryService
 from meeting_prep.tools.memory import (
     search_memory,
     preload_memory,
     initialize_briefing_session,
+    preload_memory_tool,
+    BriefingPreloadMemoryTool,
 )
 
 
@@ -33,6 +38,7 @@ class MockToolContext:
         self.actions.state_delta = {}
         self._memories = memories or []
         self.should_fail = should_fail
+        self.user_content = types.Content(role="user", parts=[types.Part.from_text(text="Stripe")])
 
     async def search_memory(self, query: str):
         if self.should_fail:
@@ -143,6 +149,61 @@ class TestMemoryTools(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             await search_memory(query="Stripe", company="Stripe", tool_context=ctx)
 
+    async def test_search_memory_word_boundary_isolation(self):
+        # Stored 'Box' must NOT match target 'Boxed' (avoid false positive substring collision)
+        box_brief = {
+            "company": "Box",
+            "date": "2026-08-01",
+            "facts": ["Box cloud storage platform"],
+        }
+        mem_box = MemoryEntry(
+            content=types.Content(role="user", parts=[types.Part.from_text(text=json.dumps(box_brief))]),
+            custom_metadata={},
+        )
+        ctx_boxed = MockToolContext(memories=[mem_box])
+        res_boxed = await search_memory(query="Boxed", company="Boxed", tool_context=ctx_boxed)
+        self.assertFalse(res_boxed["has_prior"])
+
+        # Stored 'Meta' DOES match target 'Meta Platforms' (valid word boundary match)
+        meta_brief = {
+            "company": "Meta",
+            "date": "2026-08-01",
+            "facts": ["Meta AI and Llama models"],
+        }
+        mem_meta = MemoryEntry(
+            content=types.Content(role="user", parts=[types.Part.from_text(text=json.dumps(meta_brief))]),
+            custom_metadata={},
+        )
+        ctx_meta = MockToolContext(memories=[mem_meta])
+        res_meta = await search_memory(query="Meta Platforms", company="Meta Platforms", tool_context=ctx_meta)
+        self.assertTrue(res_meta["has_prior"])
+        self.assertEqual(res_meta["prior_facts"], ["Meta AI and Llama models"])
+
+    async def test_search_memory_recency_sort_dated_beats_undated(self):
+        # Undated records should not sort above dated records in descending sort
+        dated_brief = {
+            "company": "Stripe",
+            "date": "2026-08-01",
+            "facts": ["Stripe dated fact"],
+        }
+        undated_brief = {
+            "company": "Stripe",
+            "facts": ["Stripe undated fact"],
+        }
+        mem_dated = MemoryEntry(
+            content=types.Content(role="user", parts=[types.Part.from_text(text=json.dumps(dated_brief))]),
+            custom_metadata={},
+        )
+        mem_undated = MemoryEntry(
+            content=types.Content(role="user", parts=[types.Part.from_text(text=json.dumps(undated_brief))]),
+            custom_metadata={},
+        )
+        ctx = MockToolContext(memories=[mem_undated, mem_dated])
+        res = await search_memory(query="Stripe", company="Stripe", tool_context=ctx)
+        self.assertTrue(res["has_prior"])
+        self.assertEqual(res["prior_date"], "2026-08-01")
+        self.assertEqual(res["prior_facts"], ["Stripe dated fact"])
+
     async def test_preload_memory_with_stripped_metadata(self):
         # Real Vertex AI Memory Bank returns empty custom_metadata
         prefs_data = {
@@ -166,12 +227,12 @@ class TestMemoryTools(unittest.IsolatedAsyncioTestCase):
         })
 
         # User provides company only, no focus or recipients overrides
-        res = initialize_briefing_session(company_input="Stripe", tool_context=ctx)
+        res = await initialize_briefing_session(company_input="Stripe", tool_context=ctx)
         self.assertEqual(res["focus_areas"], ["Preloaded Topic"])
         self.assertEqual(res["recipients"], ["preloaded@example.com"])
 
         # User provides explicit overrides
-        res2 = initialize_briefing_session(
+        res2 = await initialize_briefing_session(
             company_input="Stripe",
             focus_areas=["New Focus"],
             recipients=["new@example.com"],
@@ -179,6 +240,22 @@ class TestMemoryTools(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(res2["focus_areas"], ["New Focus"])
         self.assertEqual(res2["recipients"], ["new@example.com"])
+
+    async def test_initialize_briefing_session_preloads_from_memory_if_empty(self):
+        # When session state has no preferences, initialize_briefing_session queries memory
+        prefs_data = {
+            "focus_areas": ["Enterprise AI", "Q3 Revenue"],
+            "recipients": ["vp@example.com"],
+        }
+        mem = MemoryEntry(
+            content=types.Content(role="user", parts=[types.Part.from_text(text=json.dumps(prefs_data))]),
+            custom_metadata={},
+        )
+        ctx = MockToolContext(state={}, memories=[mem])
+        res = await initialize_briefing_session(company_input="Stripe", tool_context=ctx)
+        self.assertEqual(res["focus_areas"], ["Enterprise AI", "Q3 Revenue"])
+        self.assertEqual(res["recipients"], ["vp@example.com"])
+        self.assertEqual(ctx.actions.state_delta["user_preferences"]["focus_areas"], ["Enterprise AI", "Q3 Revenue"])
 
     async def test_save_memory_after_publish_on_approval(self):
         class MockCallbackContext:
@@ -209,9 +286,23 @@ class TestMemoryTools(unittest.IsolatedAsyncioTestCase):
         topics = [m.custom_metadata.get("topic") for m in ctx.saved_memories]
         self.assertIn("company_brief_history", topics)
         self.assertIn("briefing_preferences", topics)
-        # Verify topics key is populated for memories.create config (Finding 1)
+        # Verify topics key uses custom_memory_topic_label and validates with AgentEngineMemoryConfig
         for m in ctx.saved_memories:
             self.assertIn("topics", m.custom_metadata)
+            topic_item = m.custom_metadata["topics"][0]
+            self.assertIn("custom_memory_topic_label", topic_item)
+            self.assertNotIn("custom_topic_id", topic_item)
+            # Validates cleanly against Vertex AI AgentEngineMemoryConfig schema
+            cfg = AgentEngineMemoryConfig(
+                topics=m.custom_metadata["topics"],
+                ttl=m.custom_metadata.get("ttl", "7776000s"),
+            )
+            self.assertIsNotNone(cfg)
+
+        # Confirm that custom_topic_id raises ValidationError due to extra="forbid"
+        from pydantic_core import ValidationError
+        with self.assertRaises(ValidationError):
+            AgentEngineMemoryConfig(topics=[{"custom_topic_id": "company_brief_history"}])
 
     async def test_save_memory_after_publish_skipped_when_not_approved(self):
         class MockCallbackContext:
@@ -236,6 +327,35 @@ class TestMemoryTools(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(ctx.session_added)
         self.assertEqual(len(ctx.saved_memories), 0)
+
+    async def test_briefing_preload_memory_tool_propagates_service_error(self):
+        # BriefingPreloadMemoryTool must not silence memory service failures
+        ctx = MockToolContext(should_fail=True)
+        tool = BriefingPreloadMemoryTool()
+        with self.assertRaises(RuntimeError):
+            await tool.process_llm_request(tool_context=ctx, llm_request=MagicMock())
+
+    async def test_unconfigured_cloud_memory_service(self):
+        orig_env = os.environ.get("DEPLOYMENT_ENV")
+        orig_engine = os.environ.get("AGENT_ENGINE_ID")
+        try:
+            os.environ["DEPLOYMENT_ENV"] = "cloud"
+            os.environ.pop("AGENT_ENGINE_ID", None)
+            svc = get_memory_service()
+            self.assertIsInstance(svc, UnconfiguredCloudMemoryService)
+            with self.assertRaises(RuntimeError):
+                await svc.search_memory(app_name="app", user_id="user", query="test")
+            with self.assertRaises(RuntimeError):
+                await svc.add_memory(app_name="app", user_id="user", memories=[])
+        finally:
+            if orig_env is not None:
+                os.environ["DEPLOYMENT_ENV"] = orig_env
+            else:
+                os.environ.pop("DEPLOYMENT_ENV", None)
+            if orig_engine is not None:
+                os.environ["AGENT_ENGINE_ID"] = orig_engine
+            else:
+                os.environ.pop("AGENT_ENGINE_ID", None)
 
 
 if __name__ == "__main__":
