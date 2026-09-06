@@ -5,7 +5,8 @@ Source: docs/hld.md §7.2
 """
 
 from google.adk.agents import LlmAgent
-from meeting_prep.config import MODEL_NAME, enable_server_side_tools_callback
+from meeting_prep.config import enable_server_side_tools_callback
+from meeting_prep.models import MODEL_ROUTING
 from meeting_prep.schemas import DeltaSummary
 from meeting_prep.tools.memory import search_memory
 from meeting_prep.callbacks.telemetry import before_agent_telemetry, after_agent_telemetry
@@ -35,7 +36,7 @@ def create_delta_agent() -> LlmAgent:
     """Create the delta_agent."""
     return LlmAgent(
         name="delta_agent",
-        model=MODEL_NAME,
+        model=MODEL_ROUTING["delta_agent"],
         instruction=DELTA_AGENT_INSTRUCTION,
         tools=[search_memory],
         before_agent_callback=before_agent_telemetry,

@@ -24,6 +24,7 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 from meeting_prep.config import PROJECT_ID, MODEL_NAME
+from meeting_prep.models import get_agent_model
 from meeting_prep.telemetry.redaction import RedactionFilter, redact_data
 
 logger = logging.getLogger(__name__)
@@ -347,8 +348,9 @@ def after_agent_telemetry(callback_context: Any) -> None:
     # 1. Inject custom attributes onto active OpenTelemetry span (HLD §13.2)
     span = trace.get_current_span()
     if span and span.is_recording():
+        resolved_model = get_agent_model(agent_name, state)
         span.set_attribute("subagent.name", agent_name)
-        span.set_attribute("subagent.model", MODEL_NAME)
+        span.set_attribute("subagent.model", resolved_model)
         span.set_attribute("subagent.latency_ms", duration_ms)
         span.set_attribute("subagent.latency_s", round(duration_s, 3))
 

@@ -5,7 +5,8 @@ Source: docs/hld.md §7.1 & §7.2
 
 import re
 from google.adk.agents import LlmAgent, SequentialAgent
-from meeting_prep.config import MODEL_NAME, enable_server_side_tools_callback
+from meeting_prep.config import enable_server_side_tools_callback
+from meeting_prep.models import MODEL_ROUTING, FLASH_LITE
 from meeting_prep.tools.memory import (
     preload_memory_tool,
     initialize_briefing_session,
@@ -68,7 +69,7 @@ Instructions:
    - If explicit focus areas/recipients are provided in the prompt, pass them as overrides to initialize_briefing_session.
    - If NOT specified in the prompt, pass None or empty list so preloaded preferences in session state are preserved.
 3. Call `initialize_briefing_session` with `company_input`, `focus_areas`, and `recipients` to record them into session state.
-4. Hand off directly to `brief_pipeline` to perform research, synthesis, approval, and publishing.
+4. After calling `initialize_briefing_session`, output a brief confirmation message (e.g. "Session initialized for <company>. Proceeding with research.") and stop. Do not call any other tools.
 """
 
 
@@ -76,7 +77,7 @@ def create_root_coordinator() -> SequentialAgent:
     """Create the root_coordinator agent."""
     coordinator_step = LlmAgent(
         name="root_coordinator_step",
-        model=MODEL_NAME,
+        model=FLASH_LITE,
         instruction=ROOT_COORDINATOR_INSTRUCTION,
         tools=[preload_memory_tool, initialize_briefing_session],
         before_agent_callback=before_agent_telemetry,

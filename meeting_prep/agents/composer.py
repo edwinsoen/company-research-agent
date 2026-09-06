@@ -1,13 +1,20 @@
 """Composer agent.
 
 Synthesizes structured findings into an executive one-page markdown brief with inline citations.
-Source: docs/hld.md §7.2
+Supports dynamic escalation to PRO on grounding self-check failure.
+
+Source: docs/hld.md §7.2, docs/orchestration-and-logic-enhancements.md §1 & §2
 """
 
+from __future__ import annotations
+
+import logging
+from typing import Any, Optional
 from google.adk.agents import LlmAgent
-from meeting_prep.config import MODEL_NAME
+from meeting_prep.models import MODEL_ROUTING
 from meeting_prep.callbacks.telemetry import before_agent_telemetry, after_agent_telemetry
 
+logger = logging.getLogger(__name__)
 
 COMPOSER_INSTRUCTION = """\
 You are an executive intelligence briefing composer.
@@ -24,6 +31,7 @@ Inputs from research:
 - Prior draft (if refining): {brief_draft?}
 - Refinement directive (if refining): {refinement_directive?}
 - Refinement target (if refining): {refinement_target?}
+- Corrective instruction (if retrying grounding): {grounding_correction?}
 
 Requirements:
 1. Synthesize ONLY from the provided structured findings. Do not hallucinate external claims.
@@ -65,7 +73,24 @@ Requirements:
 """
 
 
-async def save_composer_draft_artifact(callback_context):
+def prepare_composer_before_agent(callback_context: Any) -> None:
+    """Reset composer model to baseline FLASH and clear per-run counters."""
+    state = callback_context.state
+    agent = getattr(callback_context, "agent", None)
+    baseline_model = MODEL_ROUTING.get("composer", "gemini-3.7-flash")
+    if agent and hasattr(agent, "model"):
+        agent.model = baseline_model
+
+    # Clear per-run grounding counters and flags so refinement loops start fresh
+    state["composer_model"] = None
+    state["grounding_attempts"] = 0
+    state["grounding_correction"] = None
+    state["grounding_retry_needed"] = False
+
+    before_agent_telemetry(callback_context)
+
+
+async def save_composer_draft_artifact(callback_context: Any) -> Optional[Any]:
     """Save the generated brief_draft as a versioned artifact in ArtifactService (HLD §7.2, §9.2)."""
     state = callback_context.state
     brief_draft = state.get("brief_draft")
@@ -86,21 +111,21 @@ async def save_composer_draft_artifact(callback_context):
             custom_metadata={"draft_version": new_version},
         )
     except Exception:
-        # Fallback if artifact service is not configured in runner
         pass
+
     after_agent_telemetry(callback_context)
     return None
 
 
 def create_composer() -> LlmAgent:
-    """Create the composer agent."""
+    """Create the composer agent (HLD §7.2, enhancements §1.3)."""
+    baseline_model = MODEL_ROUTING.get("composer", "gemini-3.7-flash")
     return LlmAgent(
         name="composer",
-        model=MODEL_NAME,
+        model=baseline_model,
         instruction=COMPOSER_INSTRUCTION,
         tools=[],
-        before_agent_callback=before_agent_telemetry,
+        before_agent_callback=prepare_composer_before_agent,
         output_key="brief_draft",
         after_agent_callback=save_composer_draft_artifact,
     )
-
