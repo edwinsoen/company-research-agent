@@ -10,6 +10,7 @@ Source: docs/hld.md §10.2, §10.3, §12.2
 import argparse
 import asyncio
 import json
+import os
 import sys
 from typing import Any, Optional
 
@@ -114,6 +115,36 @@ def _patch_engine_methods(engine: Any) -> None:
             setattr(engine, m_name, types.MethodType(fn, engine))
 
 
+def load_delegated_drive_token() -> Optional[str]:
+    """Loads and auto-refreshes local user-delegated Drive OAuth access token if present."""
+    token_file = os.getenv("DRIVE_CREDENTIALS_FILE", ".drive_user_token.json")
+    if not os.path.isfile(token_file):
+        return os.getenv("DRIVE_USER_TOKEN")
+    try:
+        with open(token_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+
+        creds = Credentials(
+            token=data.get("access_token"),
+            refresh_token=data.get("refresh_token"),
+            token_uri=data.get("token_uri", "https://oauth2.googleapis.com/token"),
+            client_id=data.get("client_id"),
+            client_secret=data.get("client_secret"),
+            scopes=["https://www.googleapis.com/auth/drive.file"],
+        )
+        if not creds.valid:
+            creds.refresh(Request())
+            data["access_token"] = creds.token
+            with open(token_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        return creds.token
+    except Exception as err:
+        print(f"   ⚠️ Could not refresh delegated Drive token: {err}")
+        return None
+
+
 async def run_pipeline(
     user_prompt: str,
     user_id: str = "executive_user",
@@ -126,6 +157,12 @@ async def run_pipeline(
         print("   Mode: Local In-Process Runner")
     print("=" * 72)
 
+    initial_state: dict[str, Any] = {}
+    delegated_token = load_delegated_drive_token()
+    if delegated_token:
+        initial_state["delegated_drive_token"] = delegated_token
+        print("   🔑 User-Delegated Drive Token: Attached to session")
+
     if engine_id:
         import vertexai
         from vertexai.preview import reasoning_engines
@@ -133,7 +170,7 @@ async def run_pipeline(
         vertexai.init(project=PROJECT_ID, location=LOCATION)
         engine = reasoning_engines.ReasoningEngine(engine_id)
         _patch_engine_methods(engine)
-        session = engine.create_session(user_id=user_id)
+        session = engine.create_session(user_id=user_id, state=initial_state)
         session_id = session.get("id") if isinstance(session, dict) else session.id
         print(f"   Session Created: {session_id}")
     else:
@@ -142,9 +179,12 @@ async def run_pipeline(
         session = await session_service.create_session(
             app_name=app.name,
             user_id=user_id,
-            state={},
+            state=initial_state,
         )
         session_id = session.id
+        if delegated_token:
+            from meeting_prep.auth import set_session_delegated_token
+            set_session_delegated_token(session_id, delegated_token)
         runner = Runner(
             app=app,
             session_service=session_service,

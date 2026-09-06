@@ -62,9 +62,15 @@ def redact_email(email: str) -> str:
     return f"{masked_user}@{domain}"
 
 
-def _get_drive_client_mode() -> str:
-    """Return configured Drive client mode: 'stub' or 'drive'."""
-    return os.getenv("DRIVE_CLIENT_MODE", "stub").lower().strip()
+def _get_drive_client_mode(tool_context: Optional[ToolContext] = None) -> str:
+    """Return configured Drive client mode: 'stub', 'drive', or auto-detected from delegated token."""
+    mode = os.getenv("DRIVE_CLIENT_MODE", "").lower().strip()
+    if mode in ("drive", "stub"):
+        return mode
+    if tool_context and hasattr(tool_context, "state") and tool_context.state:
+        if tool_context.state.get("delegated_drive_token"):
+            return "drive"
+    return "stub"
 
 
 from meeting_prep.auth import get_drive_session
@@ -175,7 +181,7 @@ def create_google_doc(
                 tool_context.actions.state_delta["published_doc_url"] = cached_doc.get("doc_url")
             return cached_doc
 
-    mode = _get_drive_client_mode()
+    mode = _get_drive_client_mode(tool_context=tool_context)
     logger.info("Executing create_google_doc in '%s' mode for %s", mode, cache_key)
 
     doc_id = ""
@@ -273,7 +279,7 @@ def share_doc(
     Returns:
         dict: Sharing results per recipient and failure summary.
     """
-    mode = _get_drive_client_mode()
+    mode = _get_drive_client_mode(tool_context=tool_context)
     shared_results: dict[str, str] = {}
     failed_results: dict[str, str] = {}
 
