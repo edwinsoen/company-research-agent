@@ -61,6 +61,11 @@ def main() -> int:
         help="Optional reasoning engine resource ID to verify deployed AGENT_IDENTITY configuration (§12A.4)",
     )
     parser.add_argument(
+        "--require-identity",
+        action="store_true",
+        help="Fail with exit code 1 if --agent-engine-id is omitted or not set.",
+    )
+    parser.add_argument(
         "--app-name",
         default=os.getenv("APP_NAME", "meeting_prep"),
         help="Target ADK application name (default: meeting_prep)",
@@ -225,23 +230,39 @@ def main() -> int:
         try:
             import vertexai
             from vertexai.preview import reasoning_engines
+
             project = os.getenv("GOOGLE_CLOUD_PROJECT")
             location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
             vertexai.init(project=project, location=location)
             engine = reasoning_engines.ReasoningEngine(agent_engine_id)
-            spec = getattr(engine, "spec", None) or {}
-            identity_type = spec.get("identity_type") if isinstance(spec, dict) else getattr(spec, "identity_type", None)
-            if identity_type == "AGENT_IDENTITY":
-                print(f"      ✅ Deployed Agent Engine identity confirmed: {identity_type} (§12A.4 verified)")
+
+            # Access identity_type via gca_resource.spec.identity_type (ReasoningEngineSpec)
+            gca_resource = getattr(engine, "gca_resource", None)
+            gca_spec = getattr(gca_resource, "spec", None) if gca_resource else None
+            raw_identity = getattr(gca_spec, "identity_type", None)
+            identity_name = getattr(raw_identity, "name", str(raw_identity))
+
+            if identity_name == "AGENT_IDENTITY":
+                print(f"      ✅ Deployed Agent Engine identity confirmed: {identity_name} (§12A.4 verified)")
             else:
-                print(f"      ⚠️ Expected identity_type AGENT_IDENTITY, got: {identity_type}")
+                print(f"      ❌ Identity mismatch! Expected AGENT_IDENTITY, got: {identity_name}")
+                return 1
         except Exception as err:
-            print(f"      ⚠️ Could not query Vertex AI Reasoning Engine directly: {err}")
+            print(f"      ❌ Failed to verify deployed Reasoning Engine identity: {err}")
+            return 1
     else:
+        if getattr(args, "require_identity", False):
+            print("      ❌ --require-identity specified but no --agent-engine-id was provided.")
+            return 1
         print("      ℹ️ Identity check skipped: Provide --agent-engine-id to query deployed spec.identity_type.")
 
-    print("\n🎉 DEPLOYED RUNTIME VERIFICATION COMPLETE!")
-    print("   §10.4 (FunctionResponse passthrough & continuity) & §12A.4 (Session persistence) verified successfully.")
+    if agent_engine_id:
+        print("\n🎉 DEPLOYED RUNTIME VERIFICATION COMPLETE!")
+        print("   §10.4 (FunctionResponse passthrough & continuity) & §12A.4 (Agent Identity & Sessions persistence) verified successfully.")
+    else:
+        print("\n🎉 RUNTIME VERIFICATION COMPLETE!")
+        print("   §10.4 (FunctionResponse passthrough & continuity) & §12A.4 (Session persistence in Agent Engine Sessions) verified successfully.")
+        print("   (Note: Provide --agent-engine-id to verify deployed spec.identity_type == AGENT_IDENTITY)")
     return 0
 
 
