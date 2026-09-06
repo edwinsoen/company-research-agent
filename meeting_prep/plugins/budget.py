@@ -26,6 +26,11 @@ DEFAULT_MAX_MODEL_CALLS = int(os.getenv("BUDGET_MAX_MODEL_CALLS", "25"))
 DEFAULT_MAX_TOKENS = int(os.getenv("BUDGET_MAX_TOKENS", "150000"))
 
 
+class BudgetExceededError(RuntimeError):
+    """Raised by BudgetPlugin when model call or token ceilings are exceeded."""
+    pass
+
+
 class BudgetPlugin(BasePlugin):
     """ADK plugin enforcing resource limits and tracking LLM usage metrics."""
 
@@ -44,7 +49,7 @@ class BudgetPlugin(BasePlugin):
         callback_context: CallbackContext,
         llm_request: LlmRequest,
     ) -> Optional[LlmResponse]:
-        """Check budget ceilings before model invocation; return termination response if breached."""
+        """Check budget ceilings before model invocation; aborts with BudgetExceededError if breached."""
         state = callback_context.state
 
         current_calls = int(state.get("budget_model_calls", 0))
@@ -56,12 +61,9 @@ class BudgetPlugin(BasePlugin):
                 f"({current_calls} calls >= {self.max_model_calls} limit)."
             )
             logger.warning("BudgetPlugin CEILING BREACH: %s", msg, extra={"event_type": "budget_breach", "calls": current_calls})
-            return LlmResponse(
-                content=types.Content(
-                    role="model",
-                    parts=[types.Part.from_text(text=msg)],
-                )
-            )
+            state["budget_breached"] = True
+            state["budget_breach_message"] = msg
+            raise BudgetExceededError(msg)
 
         if current_tokens >= self.max_total_tokens:
             msg = (
@@ -69,12 +71,9 @@ class BudgetPlugin(BasePlugin):
                 f"({current_tokens} tokens >= {self.max_total_tokens} limit)."
             )
             logger.warning("BudgetPlugin CEILING BREACH: %s", msg, extra={"event_type": "budget_breach", "tokens": current_tokens})
-            return LlmResponse(
-                content=types.Content(
-                    role="model",
-                    parts=[types.Part.from_text(text=msg)],
-                )
-            )
+            state["budget_breached"] = True
+            state["budget_breach_message"] = msg
+            raise BudgetExceededError(msg)
 
         return None
 

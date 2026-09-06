@@ -82,7 +82,7 @@ class PublishPolicyPlugin(BasePlugin):
 
         # 2. Assert recipient domain allowlist
         if tool_name == "share_doc":
-            recipients = tool_args.get("recipients") or []
+            recipients = tool_args.get("emails") or tool_args.get("recipients") or []
             if isinstance(recipients, str):
                 recipients = [recipients]
             for recipient in recipients:
@@ -154,20 +154,24 @@ class PublishPolicyPlugin(BasePlugin):
     ) -> Optional[dict[str, Any]]:
         """Record successful create_google_doc execution in idempotency cache."""
         tool_name = getattr(tool, "name", "")
-        if tool_name == "create_google_doc" and isinstance(result, dict) and result.get("status") == "success":
+        if (
+            tool_name == "create_google_doc"
+            and isinstance(result, dict)
+            and (result.get("doc_url") or result.get("status") == "success")
+            and not result.get("error")
+        ):
             state = tool_context.state
             brief_id = str(tool_args.get("brief_id") or state.get("brief_id") or (state.get("resolved_entity") or {}).get("name") or "default_brief")
             version = int(tool_args.get("version") or state.get("draft_version") or 1)
             idempotency_key = f"{brief_id}:v{version}"
 
-            published_cache = state.get("_published_idempotency_cache")
-            if not isinstance(published_cache, dict):
-                published_cache = {}
-                state["_published_idempotency_cache"] = published_cache
-
+            published_cache = dict(state.get("_published_idempotency_cache") or {})
             published_cache[idempotency_key] = {
                 "doc_id": result.get("doc_id"),
                 "doc_url": result.get("doc_url"),
             }
+            state["_published_idempotency_cache"] = published_cache
+            if hasattr(tool_context, "actions") and tool_context.actions:
+                tool_context.actions.state_delta["_published_idempotency_cache"] = published_cache
 
         return None

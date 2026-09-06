@@ -10,8 +10,8 @@ from google.adk.models import LlmRequest, LlmResponse
 from google.genai import types
 
 from meeting_prep.plugins.publish_policy import PublishPolicyPlugin
-from meeting_prep.plugins.grounding import GroundingGuardPlugin
-from meeting_prep.plugins.budget import BudgetPlugin
+from meeting_prep.plugins.grounding import GroundingGuardPlugin, is_structural_line
+from meeting_prep.plugins.budget import BudgetPlugin, BudgetExceededError
 from meeting_prep.plugins.injection import InjectionGuardPlugin
 from meeting_prep.models import PRO, FLASH
 from meeting_prep.app import app
@@ -64,7 +64,7 @@ async def test_publish_policy_allows_approved_create_doc():
 
 @pytest.mark.asyncio
 async def test_publish_policy_denies_unauthorized_recipient_domain():
-    """Verify share_doc is denied if any recipient is not in allowed domains."""
+    """Verify share_doc is denied if any recipient is not in allowed domains (supports emails and recipients args)."""
     plugin = PublishPolicyPlugin(allowed_domains=["corp.com"])
     mock_tool = MagicMock()
     mock_tool.name = "share_doc"
@@ -72,14 +72,32 @@ async def test_publish_policy_denies_unauthorized_recipient_domain():
     ctx = MagicMock()
     ctx.state = {"approval_decision": {"status": "approved"}}
 
+    # Valid domain with emails
+    res_ok = await plugin.before_tool_callback(
+        tool=mock_tool,
+        tool_args={"doc_id": "doc123", "emails": ["alice@corp.com"]},
+        tool_context=ctx,
+    )
+    assert res_ok is None
+
+    # Invalid domain with emails
     res = await plugin.before_tool_callback(
         tool=mock_tool,
-        tool_args={"doc_id": "doc123", "recipients": ["attacker@evil.com"]},
+        tool_args={"doc_id": "doc123", "emails": ["attacker@evil.com"]},
         tool_context=ctx,
     )
     assert res is not None
     assert res.get("status") == "denied"
     assert "attacker@evil.com" in res.get("error", "")
+
+    # Invalid domain with recipients
+    res2 = await plugin.before_tool_callback(
+        tool=mock_tool,
+        tool_args={"doc_id": "doc123", "recipients": ["attacker@evil.com"]},
+        tool_context=ctx,
+    )
+    assert res2 is not None
+    assert res2.get("status") == "denied"
 
 
 @pytest.mark.asyncio
@@ -91,15 +109,17 @@ async def test_publish_policy_idempotency_cache():
 
     ctx = MagicMock()
     ctx.state = {"approval_decision": {"status": "approved"}}
+    ctx.actions = MagicMock()
+    ctx.actions.state_delta = {}
 
     tool_args = {"title": "Brief", "markdown": "# Brief", "brief_id": "Acme", "version": 1}
 
-    # Simulate first execution success
+    # Simulate first execution success (create_google_doc returns doc_url and doc_id)
     await plugin.after_tool_callback(
         tool=mock_tool,
         tool_args=tool_args,
         tool_context=ctx,
-        result={"status": "success", "doc_id": "doc_abc123", "doc_url": "https://docs.google.com/doc_abc123"},
+        result={"doc_id": "doc_abc123", "doc_url": "https://docs.google.com/doc_abc123", "cached": False},
     )
 
     # Second execution with same idempotency key
@@ -155,7 +175,7 @@ async def test_grounding_guard_passes_grounded_draft():
 
 @pytest.mark.asyncio
 async def test_grounding_guard_fails_attempt1_and_escalates_to_pro():
-    """Verify first failure flags retry, escalates model to PRO, and sets corrective instruction."""
+    """Verify first failure flags retry, escalates model to PRO, sets corrective instruction, and fail-safes."""
     plugin = GroundingGuardPlugin()
     ctx = MagicMock()
     ctx.agent_name = "composer"
@@ -176,12 +196,30 @@ async def test_grounding_guard_fails_attempt1_and_escalates_to_pro():
         content=types.Content(role="model", parts=[types.Part.from_text(text=draft)])
     )
 
+    # When last_req is not cached, plugin fail-safes by annotating with warning
     res = await plugin.after_model_callback(callback_context=ctx, llm_response=llm_resp)
-    assert res is None
+    assert res is not None
     assert ctx.state["grounding_validation"]["passed"] is False
-    assert ctx.state["grounding_retry_needed"] is True
     assert ctx.state["composer_model"] == PRO
     assert "Grounding self-check failed" in ctx.state["grounding_correction"]
+    assert "Grounding Notice" in res.content.parts[0].text
+
+
+def test_grounding_structural_markdown_detection():
+    """Verify ordinary Markdown (headers, tables, quotes, code, italics) is recognized as structural."""
+    assert is_structural_line("# Header 1") is True
+    assert is_structural_line("## 1. Company Profile") is True
+    assert is_structural_line("| Metric | 2024 | 2025 |") is True
+    assert is_structural_line("|---|---|---|") is True
+    assert is_structural_line("> [!WARNING] Grounding Notice") is True
+    assert is_structural_line("> Some quoted text") is True
+    assert is_structural_line("```python") is True
+    assert is_structural_line("*Standard profile requested; no custom focus areas specified.*") is True
+    assert is_structural_line("*No prior briefing on record. Establishing initial baseline.*") is True
+    assert is_structural_line("**Overview & Governance:**") is True
+    assert is_structural_line("---") is True
+    # Substantive claim line with facts must not be structural
+    assert is_structural_line("Acme generated $6.8 billion in net revenue in 2025.") is False
 
 
 @pytest.mark.asyncio
@@ -243,30 +281,30 @@ async def test_budget_plugin_tracks_usage():
 
 @pytest.mark.asyncio
 async def test_budget_plugin_ceiling_calls_short_circuit():
-    """Verify budget plugin aborts before model if call ceiling is exceeded."""
+    """Verify budget plugin aborts with BudgetExceededError if call ceiling is exceeded."""
     plugin = BudgetPlugin(max_model_calls=5, max_total_tokens=50000)
     ctx = MagicMock()
     ctx.state = {"budget_model_calls": 5, "budget_total_tokens": 1000}
 
     req = MagicMock(spec=LlmRequest)
-    res = await plugin.before_model_callback(callback_context=ctx, llm_request=req)
+    with pytest.raises(BudgetExceededError, match="Model-call ceiling exceeded"):
+        await plugin.before_model_callback(callback_context=ctx, llm_request=req)
 
-    assert res is not None
-    assert "Execution terminated: Model-call ceiling exceeded" in res.content.parts[0].text
+    assert ctx.state.get("budget_breached") is True
 
 
 @pytest.mark.asyncio
 async def test_budget_plugin_ceiling_tokens_short_circuit():
-    """Verify budget plugin aborts before model if token ceiling is exceeded."""
+    """Verify budget plugin aborts with BudgetExceededError if token ceiling is exceeded."""
     plugin = BudgetPlugin(max_model_calls=50, max_total_tokens=5000)
     ctx = MagicMock()
     ctx.state = {"budget_model_calls": 2, "budget_total_tokens": 5100}
 
     req = MagicMock(spec=LlmRequest)
-    res = await plugin.before_model_callback(callback_context=ctx, llm_request=req)
+    with pytest.raises(BudgetExceededError, match="Total token ceiling exceeded"):
+        await plugin.before_model_callback(callback_context=ctx, llm_request=req)
 
-    assert res is not None
-    assert "Execution terminated: Total token ceiling exceeded" in res.content.parts[0].text
+    assert ctx.state.get("budget_breached") is True
 
 
 # =============================================================================

@@ -74,14 +74,18 @@ Requirements:
 
 
 def prepare_composer_before_agent(callback_context: Any) -> None:
-    """Check if model escalation to PRO is requested in state."""
+    """Reset composer model to baseline FLASH and clear per-run counters."""
     state = callback_context.state
     agent = getattr(callback_context, "agent", None)
+    baseline_model = MODEL_ROUTING.get("composer", "gemini-3.7-flash")
     if agent and hasattr(agent, "model"):
-        escalated_model = state.get("composer_model")
-        if escalated_model and agent.model != escalated_model:
-            logger.info("Escalating composer model dynamically to: %s", escalated_model)
-            agent.model = escalated_model
+        agent.model = baseline_model
+
+    # Clear per-run grounding counters and flags so refinement loops start fresh
+    state.pop("composer_model", None)
+    state.pop("grounding_attempts", None)
+    state.pop("grounding_correction", None)
+    state.pop("grounding_retry_needed", None)
 
     before_agent_telemetry(callback_context)
 

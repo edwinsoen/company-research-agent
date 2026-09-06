@@ -20,7 +20,7 @@ from meeting_prep.plugins.redaction import (
 )
 from meeting_prep.plugins.publish_policy import PublishPolicyPlugin
 from meeting_prep.plugins.grounding import GroundingGuardPlugin
-from meeting_prep.plugins.budget import BudgetPlugin
+from meeting_prep.plugins.budget import BudgetPlugin, BudgetExceededError
 from meeting_prep.plugins.injection import InjectionGuardPlugin
 
 __all__ = [
@@ -33,5 +33,6 @@ __all__ = [
     "PublishPolicyPlugin",
     "GroundingGuardPlugin",
     "BudgetPlugin",
+    "BudgetExceededError",
     "InjectionGuardPlugin",
 ]
