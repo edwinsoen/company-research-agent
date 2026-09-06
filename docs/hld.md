@@ -523,13 +523,14 @@ Terraform for: the Agent Engine instance, Memory Bank configuration (topics, TTL
 
 Note that the Reasoning Engine Service Agent holds Memory Bank read/write permissions by default; under Agent Identity, grant `roles/aiplatform.expressUser` to the agent identity explicitly rather than relying on that fallback. Local development runs under developer ADC and needs its own grants.
 
-### 14.3 Pipeline
+### 14.3 Evaluation and Verification Pipeline
 
+System evaluation is driven by phase-by-phase automated verification scripts rather than static offline scoring:
 1. Lint and type check
-2. Unit tests on tools with mocked Drive and search clients
-3. Contract test: full graph against recorded fixtures, search stubbed. Asserts graph structure, state keys written, and tool contracts — not answer quality.
-4. Build and deploy to staging Agent Runtime
-5. Post-deploy smoke test against the REST endpoint with a known company, including verification that the deployed agent runs under its agent identity (§12A.4)
+2. Unit tests on tools, plugins, memory, and telemetry (71 tests)
+3. Phase-by-phase evaluation scripts: dedicated standalone acceptance scripts (`scripts/run_phase1.py` through `scripts/run_phase6.py`, `scripts/verify_deployed_runtime.py`, and `scripts/verify_remote_memory.py`) evaluate multi-agent orchestration, state invariants, HITL gate pause/resume semantics, tool idempotency, memory bank retention/scoping, and observability/tracing pipelines across each milestone.
+4. Build and deploy to staging Agent Runtime under dedicated SPIFFE Agent Identity (`AGENT_IDENTITY`)
+5. Post-deploy smoke test against the REST endpoint with a known company, verifying live search grounding, remote HITL approval, user-delegated Google Doc publishing, and audit log identity verification (§12A.4)
 6. Manual approval, then promote to prod
 
 ### 14.4 Rollback
@@ -625,6 +626,8 @@ Explicitly out of scope. Listed so the boundary reads as a decision, not an omis
 **CRM integration and pipeline context.**
 
 **Brief content quality tuning.** The composer prompt gets one pass.
+
+**Formal offline evaluation harness.** Replaced by phase-by-phase automated verification scripts (`scripts/run_phase*.py` and `scripts/verify_*.py`) and contract test suites as the evaluation method, assessing graph structure, state contracts, HITL pause/resume semantics, memory bank lifecycle, and runtime guardrails across each milestone.
 
 **Email delivery.** Google Doc only. Email is marginally simpler but leaves nothing to inspect.
 

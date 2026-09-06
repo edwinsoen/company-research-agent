@@ -210,9 +210,19 @@ curl -X POST http://localhost:8000/briefs/<SESSION_ID>/decision \
 # Response returns: {"status": "completed", "doc_url": "https://docs.google.com/document/d/..."}
 ```
 
-### 3. Automated Verification Suites
+### 3. Evaluation Method: Phase Verification Suites
 
-Run the standalone verification suites for each phase:
+The system's correctness, orchestration resilience, and architectural contracts are evaluated through standalone, phase-by-phase automated verification scripts rather than static offline scoring. Each script executes realistic agent workflows and programmatically asserts multi-agent graph structure, state transitions, tool contracts, memory lifecycles, and observability:
+
+| Evaluation Suite | Evaluated Criteria & Assertions |
+|---|---|
+| **Phase 1: Multi-Agent Pipeline** (`scripts/run_phase1.py`) | Evaluates parallel researcher branch execution (`profile_researcher`, `news_researcher`, `focus_researcher`), session state contracts (`research_*`), `delta_agent` comparison, and `composer` markdown brief generation. |
+| **Phase 2: HITL & Refinement** (`scripts/run_phase2.py`) | Evaluates non-blocking pause/resume cycles (`LongRunningFunctionTool` for `request_disambiguation` and `approve_brief`), state preservation across turns, and selective researcher reruns driven by `refinement_router` without full pipeline re-execution. |
+| **Phase 3: Publishing & Idempotency** (`scripts/run_phase3.py`) | Evaluates Google Doc creation via Google Drive API, error-isolated recipient sharing (`share_doc`), and double-approval idempotency asserting that re-approving `(brief_id, version)` returns existing document references without duplicate file creation. |
+| **Phase 4: Agent Runtime & REST API** (`scripts/run_phase4.py`, `scripts/verify_deployed_runtime.py`) | Evaluates two-legged REST API contracts (`POST /briefs`, `POST /briefs/{id}/decision`, `GET /briefs/{id}`), recovery of pending function calls from session event history, and remote deployment under SPIFFE Agent Identity (`AGENT_IDENTITY`). |
+| **Phase 5: Memory Bank Lifecycle** (`scripts/run_phase5.py`, `scripts/verify_remote_memory.py`) | Evaluates 2-run lifecycle: post-approval-only ingestion (`save_memory_after_publish`), 90-day TTL enforcement on `company_brief_history`, regex word-boundary isolation against false-positive company collisions, and turn-start preference preloading. |
+| **Phase 6: Observability & Redaction** (`scripts/run_phase6.py`) | Evaluates structured JSON logging with 1:1 Cloud Trace correlation (`logging.googleapis.com/trace`), dual intent/outcome operational event pairing, OpenTelemetry span hierarchy (`hitl_wait`, `subagent.*`), UI provenance table, and multi-entity PII/credential redaction. |
+| **Phase 7: Routing & Guardrails** (`tests/test_model_routing.py`, `tests/test_guardrail_plugins.py`) | Evaluates declarative multi-tier model routing, dynamic Pro-tier escalation on citation gaps, runtime guardrail plugins (`BudgetPlugin`, `InjectionGuardPlugin`, `RedactionPlugin`, `GroundingGuardPlugin`, `PublishPolicyPlugin`), and CLI delegated token refresh fallback. |
 
 ```bash
 # Phase 1: Multi-agent execution and session state contracts
@@ -238,6 +248,9 @@ Run the standalone verification suites for each phase:
 
 # Phase 6 (Observability & Tracing): Structured JSON logging, Cloud Trace correlation, and PII redaction
 .venv/bin/python scripts/run_phase6.py
+
+# Phase 7 (Routing & Guardrail Plugins): Model routing, runtime guardrails, and token refresh fallback
+.venv/bin/pytest -v tests/test_model_routing.py tests/test_guardrail_plugins.py tests/test_drive_tools.py
 ```
 
 ### 4. Running Unit Tests
