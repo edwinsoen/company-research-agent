@@ -1,4 +1,4 @@
-"""Composer agent and composer retry flow.
+"""Composer agent.
 
 Synthesizes structured findings into an executive one-page markdown brief with inline citations.
 Supports dynamic escalation to PRO on grounding self-check failure.
@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Optional
-from google.adk.agents import LlmAgent, LoopAgent
-from meeting_prep.models import MODEL_ROUTING, PRO
+from google.adk.agents import LlmAgent
+from meeting_prep.models import MODEL_ROUTING
 from meeting_prep.callbacks.telemetry import before_agent_telemetry, after_agent_telemetry
 
 logger = logging.getLogger(__name__)
@@ -87,40 +87,34 @@ def prepare_composer_before_agent(callback_context: Any) -> None:
 
 
 async def save_composer_draft_artifact(callback_context: Any) -> Optional[Any]:
-    """Save generated draft and handle retry loop progression."""
+    """Save the generated brief_draft as a versioned artifact in ArtifactService (HLD §7.2, §9.2)."""
     state = callback_context.state
     brief_draft = state.get("brief_draft")
     if not brief_draft:
         return None
 
-    # If grounding check passed or repeated attempt completed, escalate to break out of composer retry loop
-    retry_needed = state.get("grounding_retry_needed", False)
-    if not retry_needed:
-        callback_context.actions.escalate = True
-
     current_version = int(state.get("draft_version", 0) or 0)
-    # Increment version only when not retrying an ungrounded attempt
-    if not retry_needed:
-        new_version = current_version + 1
-        state["draft_version"] = new_version
-        filename = f"brief_draft_v{new_version}.md"
-        try:
-            from google.genai import types
-            part = types.Part.from_text(text=brief_draft)
-            await callback_context.save_artifact(
-                filename=filename,
-                artifact=part,
-                custom_metadata={"draft_version": new_version},
-            )
-        except Exception:
-            pass
+    new_version = current_version + 1
+    state["draft_version"] = new_version
+
+    filename = f"brief_draft_v{new_version}.md"
+    try:
+        from google.genai import types
+        part = types.Part.from_text(text=brief_draft)
+        await callback_context.save_artifact(
+            filename=filename,
+            artifact=part,
+            custom_metadata={"draft_version": new_version},
+        )
+    except Exception:
+        pass
 
     after_agent_telemetry(callback_context)
     return None
 
 
-def create_composer_agent() -> LlmAgent:
-    """Create the core composer LlmAgent."""
+def create_composer() -> LlmAgent:
+    """Create the composer agent (HLD §7.2, enhancements §1.3)."""
     baseline_model = MODEL_ROUTING.get("composer", "gemini-3.7-flash")
     return LlmAgent(
         name="composer",
@@ -130,13 +124,4 @@ def create_composer_agent() -> LlmAgent:
         before_agent_callback=prepare_composer_before_agent,
         output_key="brief_draft",
         after_agent_callback=save_composer_draft_artifact,
-    )
-
-
-def create_composer() -> LoopAgent:
-    """Create the composer flow with dynamic escalation loop (HLD §7.2, enhancements §1.3)."""
-    return LoopAgent(
-        name="composer_flow",
-        max_iterations=2,
-        sub_agents=[create_composer_agent()],
     )

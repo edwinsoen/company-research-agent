@@ -5,19 +5,21 @@ Enforces:
 1. Extract every claim line from the draft.
 2. Assert each carries a source URL.
 3. Assert each URL appears in the research_* findings in session state.
-4. On failure, reject draft and flag retry with corrective instruction on PRO tier.
+4. On failure, reject draft and regenerate with corrective instruction on PRO tier.
 5. On repeated failure, surface draft with unsourced claims listed.
 """
 
 from __future__ import annotations
 
+import copy
 import logging
 import re
 from typing import Any, Optional, Set
 
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.agents.callback_context import CallbackContext
-from google.adk.models import LlmResponse
+from google.adk.models import LlmRequest, LlmResponse
+from google.genai import types
 from meeting_prep.models import PRO
 
 logger = logging.getLogger(__name__)
@@ -52,7 +54,6 @@ def extract_known_research_urls(state: dict[str, Any]) -> Set[str]:
                 cleaned = url.strip().rstrip("/")
                 if cleaned:
                     known_urls.add(cleaned)
-                    # Also include exact string as-is
                     known_urls.add(url.strip())
 
     return known_urls
@@ -89,6 +90,20 @@ class GroundingGuardPlugin(BasePlugin):
 
     def __init__(self) -> None:
         super().__init__(name="grounding_guard_plugin")
+        self._last_requests: dict[str, LlmRequest] = {}
+
+    async def before_model_callback(
+        self,
+        *,
+        callback_context: CallbackContext,
+        llm_request: LlmRequest,
+    ) -> Optional[LlmResponse]:
+        """Capture incoming LlmRequest for composer to enable Pro regeneration if needed."""
+        agent_name = getattr(callback_context, "agent_name", "")
+        if agent_name == "composer":
+            key = getattr(callback_context, "invocation_id", "") or "default"
+            self._last_requests[key] = llm_request
+        return None
 
     async def after_model_callback(
         self,
@@ -165,6 +180,7 @@ class GroundingGuardPlugin(BasePlugin):
                 extra={"event_type": "grounding_check", "status": "PASSED", "attempt": current_attempt},
             )
             state["grounding_retry_needed"] = False
+            state["brief_draft"] = draft_text
             return None
 
         # Failure case
@@ -191,6 +207,68 @@ class GroundingGuardPlugin(BasePlugin):
                 + "\n\nPlease regenerate the complete briefing. Ensure EVERY factual claim is supported by an inline citation link [anchor](url) strictly using the URLs from the research findings."
             )
             state["grounding_correction"] = corrective_msg
+
+            # Re-generate using PRO model if request is cached
+            key = getattr(callback_context, "invocation_id", "") or "default"
+            last_req = self._last_requests.get(key)
+            if last_req:
+                try:
+                    from google.adk.models.registry import LLMRegistry
+                    pro_llm = LLMRegistry.new_llm(PRO)
+                    retry_req = copy.deepcopy(last_req)
+                    retry_req.model = PRO
+                    retry_req.contents.append(
+                        types.Content(role="user", parts=[types.Part.from_text(text=corrective_msg)])
+                    )
+                    pro_response = None
+                    async for chunk in pro_llm.generate_content_async(retry_req, stream=False):
+                        pro_response = chunk
+
+                    if pro_response:
+                        regen_text = ""
+                        if pro_response.content and pro_response.content.parts:
+                            for p in pro_response.content.parts:
+                                if getattr(p, "text", ""):
+                                    regen_text += p.text
+
+                        # Validate attempt 2 claims
+                        regen_unsourced = []
+                        for line in regen_text.splitlines():
+                            clean_line = line.strip()
+                            if is_structural_line(clean_line):
+                                continue
+                            m_links = MARKDOWN_LINK_PATTERN.findall(clean_line)
+                            r_urls = URL_PATTERN.findall(clean_line)
+                            if not m_links and not r_urls:
+                                regen_unsourced.append(clean_line)
+                            else:
+                                for u in [l[1].strip() for l in m_links] + [x.strip() for x in r_urls]:
+                                    if u.rstrip("/") not in known_normalized:
+                                        regen_unsourced.append(f"{clean_line} (Invalid URL: {u})")
+
+                        state["grounding_attempts"] = 2
+                        state["grounding_retry_needed"] = False
+                        if regen_unsourced:
+                            warning = (
+                                "\n\n> [!WARNING] **Grounding Notice: The following claims could not be verified against research sources:**\n"
+                                + "\n".join(f"> - {claim}" for claim in regen_unsourced)
+                                + "\n"
+                            )
+                            annotated = regen_text + warning
+                            state["brief_draft"] = annotated
+                            return LlmResponse(
+                                content=types.Content(
+                                    role="model",
+                                    parts=[types.Part.from_text(text=annotated)],
+                                )
+                            )
+
+                        state["brief_draft"] = regen_text
+                        return pro_response
+                except Exception as err:
+                    logger.warning("Dynamic Pro regeneration in GroundingGuardPlugin failed: %s", err)
+
+            return None
         else:
             # Second failure: Surface the draft with the ungrounded claims explicitly listed
             state["grounding_retry_needed"] = False
@@ -199,15 +277,11 @@ class GroundingGuardPlugin(BasePlugin):
                 + "\n".join(f"> - {claim}" for claim in unsourced_claims)
                 + "\n"
             )
-            # Append warning to draft
             annotated_draft = draft_text + unsourced_warning
             state["brief_draft"] = annotated_draft
-            from google.genai import types
             return LlmResponse(
                 content=types.Content(
                     role="model",
                     parts=[types.Part.from_text(text=annotated_draft)],
                 )
             )
-
-        return None

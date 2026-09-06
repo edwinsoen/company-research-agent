@@ -21,7 +21,7 @@ from meeting_prep.agents.researchers import (
     create_focus_researcher,
 )
 from meeting_prep.agents.delta import create_delta_agent
-from meeting_prep.agents.composer import create_composer_agent
+from meeting_prep.agents.composer import create_composer
 from meeting_prep.agents.approval import create_approval_gate, create_refinement_router
 from meeting_prep.agents.publisher import create_publisher
 from meeting_prep.callbacks.telemetry import after_agent_telemetry
@@ -65,7 +65,7 @@ def test_agent_factory_model_binding():
     delta = create_delta_agent()
     assert delta.model == PRO
 
-    composer = create_composer_agent()
+    composer = create_composer()
     assert composer.model == FLASH
 
     gate = create_approval_gate()
