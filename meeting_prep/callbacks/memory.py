@@ -13,10 +13,13 @@ import datetime
 import inspect
 import json
 import logging
+import time
 from typing import Any
 
 from google.adk.memory.memory_entry import MemoryEntry
 from google.genai import types
+
+from meeting_prep.callbacks.telemetry import log_intent, log_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +30,7 @@ async def save_memory_after_publish(callback_context) -> None:
     Fires on after_agent_callback on the publisher agent.
     """
     state = callback_context.state or {}
+    start_time = time.perf_counter()
 
     # Check human approval decision
     decision = state.get("approval_decision") or {}
@@ -35,16 +39,33 @@ async def save_memory_after_publish(callback_context) -> None:
     else:
         status = getattr(decision, "status", None)
 
-    if status != "approved":
-        logger.info("Memory write skipped: executive brief was not approved by human reviewer.")
-        return
-
     # Extract target company name
     resolved_entity = state.get("resolved_entity") or {}
     if isinstance(resolved_entity, dict):
         company_name = resolved_entity.get("name") or state.get("company_input") or "Unknown"
     else:
         company_name = getattr(resolved_entity, "name", None) or state.get("company_input") or "Unknown"
+
+    log_intent(
+        logger,
+        "memory_write",
+        f"Initiating post-approval Memory Bank ingestion for company '{company_name}'",
+        company=company_name,
+        approval_status=status,
+    )
+
+    if status != "approved":
+        duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+        log_outcome(
+            logger,
+            "memory_write",
+            f"Memory write skipped: executive brief was not approved (status='{status}')",
+            status="SKIPPED",
+            duration_ms=duration_ms,
+            company=company_name,
+        )
+        logger.info("Memory write skipped: executive brief was not approved by human reviewer.")
+        return
 
     # Extract top headline findings
     research_profile = state.get("research_profile") or {}
@@ -204,4 +225,14 @@ async def save_memory_after_publish(callback_context) -> None:
         logger.info("Triggered add_session_to_memory on callback context")
     except Exception as err:
         logger.debug("add_session_to_memory call: %s", err)
+
+    duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+    log_outcome(
+        logger,
+        "memory_write",
+        f"Completed Memory Bank persistence for '{company_name}'",
+        status="SUCCESS",
+        duration_ms=duration_ms,
+        company=company_name,
+    )
 

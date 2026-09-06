@@ -15,6 +15,7 @@ from meeting_prep.agents.researchers import create_research_parallel
 from meeting_prep.agents.delta import create_delta_agent
 from meeting_prep.agents.approval import create_refinement_loop
 from meeting_prep.agents.publisher import create_publisher
+from meeting_prep.callbacks.telemetry import before_agent_telemetry, after_agent_telemetry
 
 
 def ensure_briefing_state(callback_context):
@@ -78,6 +79,8 @@ def create_root_coordinator() -> SequentialAgent:
         model=MODEL_NAME,
         instruction=ROOT_COORDINATOR_INSTRUCTION,
         tools=[preload_memory_tool, initialize_briefing_session],
+        before_agent_callback=before_agent_telemetry,
+        after_agent_callback=after_agent_telemetry,
         before_model_callback=enable_server_side_tools_callback,
     )
     pipeline = create_brief_pipeline()

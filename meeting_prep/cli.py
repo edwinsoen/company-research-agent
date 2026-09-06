@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from typing import Any, Optional
 
 from google.adk.artifacts import InMemoryArtifactService
@@ -22,6 +23,11 @@ from google.genai import types
 
 from meeting_prep.app import app
 from meeting_prep.config import MODEL_NAME, PROJECT_ID, LOCATION
+from meeting_prep.callbacks.telemetry import (
+    configure_logging,
+    record_hitl_wait_span,
+    format_provenance_table,
+)
 
 
 def print_banner():
@@ -151,6 +157,7 @@ async def run_pipeline(
     user_id: str = "executive_user",
     engine_id: Optional[str] = None,
 ):
+    configure_logging()
     print_banner()
     if engine_id:
         print(f"   Mode: Remote Deployed Agent Engine ({engine_id})")
@@ -240,6 +247,7 @@ async def run_pipeline(
 
         call_id, func_name, func_args = pending_gate
         iteration += 1
+        gate_pause_time = time.perf_counter()
 
         # Handle Gate 1: Entity Disambiguation
         if func_name == "request_disambiguation":
@@ -265,6 +273,13 @@ async def run_pipeline(
                 return await get_current_state()
 
             selected = candidates[choice - 1] if candidates else {}
+            wait_duration_s = time.perf_counter() - gate_pause_time
+            record_hitl_wait_span(
+                gate_name=func_name,
+                wait_duration_s=wait_duration_s,
+                decision_status=selected.get("name", "selected"),
+                company=comp_name,
+            )
             print(f"   Selected: {selected.get('name')}")
             print("-" * 72)
 
@@ -284,6 +299,8 @@ async def run_pipeline(
         # Handle Gate 2: Approve / Revise Draft
         elif func_name == "approve_brief":
             draft = func_args.get("draft", "")
+            state = await get_current_state()
+            comp_name = state.get("company_input") or (state.get("resolved_entity") or {}).get("name") or "Unknown"
             print("\n" + "=" * 72)
             print("📄 [HITL Gate 2: Executive Brief Draft Review]")
             print("=" * 72)
@@ -317,6 +334,14 @@ async def run_pipeline(
                 print(f"\n⚠️ Input '{action}' cancelled or invalid. Leaving session paused at draft review gate.")
                 return await get_current_state()
 
+            wait_duration_s = time.perf_counter() - gate_pause_time
+            record_hitl_wait_span(
+                gate_name=func_name,
+                wait_duration_s=wait_duration_s,
+                decision_status=decision.get("status", "unknown"),
+                company=comp_name,
+            )
+
             next_message = types.Content(
                 role="user",
                 parts=[
@@ -337,6 +362,11 @@ async def run_pipeline(
     doc_url = final_state.get("published_doc_url")
     if doc_url:
         print(f"\n📎 Published Google Doc: {doc_url}")
+
+    provenance = final_state.get("brief_provenance") or {}
+    if provenance:
+        print("\n📊 [Brief Generation Provenance Panel (HLD §13.2)]")
+        print(format_provenance_table(provenance))
     return final_state
 
 

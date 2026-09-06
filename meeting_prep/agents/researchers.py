@@ -10,6 +10,7 @@ from google.adk.tools import google_search
 
 from meeting_prep.config import MODEL_NAME, enable_server_side_tools_callback
 from meeting_prep.schemas import ResearchFindings
+from meeting_prep.callbacks.telemetry import before_agent_telemetry, after_agent_telemetry
 
 
 PROFILE_RESEARCHER_INSTRUCTION = """\
@@ -82,6 +83,8 @@ def create_profile_researcher() -> LlmAgent:
         model=MODEL_NAME,
         instruction=PROFILE_RESEARCHER_INSTRUCTION,
         tools=[google_search],
+        before_agent_callback=before_agent_telemetry,
+        after_agent_callback=after_agent_telemetry,
         output_schema=ResearchFindings,
         output_key="research_profile",
         before_model_callback=enable_server_side_tools_callback,
@@ -96,6 +99,8 @@ def create_news_researcher() -> LlmAgent:
         model=MODEL_NAME,
         instruction=NEWS_RESEARCHER_INSTRUCTION,
         tools=[google_search],
+        before_agent_callback=before_agent_telemetry,
+        after_agent_callback=after_agent_telemetry,
         output_schema=ResearchFindings,
         output_key="research_news",
         before_model_callback=enable_server_side_tools_callback,
@@ -110,6 +115,8 @@ def create_focus_researcher() -> LlmAgent:
         model=MODEL_NAME,
         instruction=FOCUS_RESEARCHER_INSTRUCTION,
         tools=[google_search],
+        before_agent_callback=before_agent_telemetry,
+        after_agent_callback=after_agent_telemetry,
         output_schema=ResearchFindings,
         output_key="research_focus",
         before_model_callback=enable_server_side_tools_callback,

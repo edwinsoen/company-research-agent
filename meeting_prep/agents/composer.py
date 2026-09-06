@@ -6,6 +6,8 @@ Source: docs/hld.md §7.2
 
 from google.adk.agents import LlmAgent
 from meeting_prep.config import MODEL_NAME
+from meeting_prep.callbacks.telemetry import before_agent_telemetry, after_agent_telemetry
+
 
 COMPOSER_INSTRUCTION = """\
 You are an executive intelligence briefing composer.
@@ -86,6 +88,7 @@ async def save_composer_draft_artifact(callback_context):
     except Exception:
         # Fallback if artifact service is not configured in runner
         pass
+    after_agent_telemetry(callback_context)
     return None
 
 
@@ -96,6 +99,7 @@ def create_composer() -> LlmAgent:
         model=MODEL_NAME,
         instruction=COMPOSER_INSTRUCTION,
         tools=[],
+        before_agent_callback=before_agent_telemetry,
         output_key="brief_draft",
         after_agent_callback=save_composer_draft_artifact,
     )

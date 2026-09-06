@@ -10,11 +10,14 @@ import inspect
 import json
 import logging
 import re
+import time
 from typing import Any, Optional
 
 from google.adk.tools.preload_memory_tool import PreloadMemoryTool
 from google.adk.tools.tool_context import ToolContext
 from typing_extensions import override
+
+from meeting_prep.callbacks.telemetry import log_intent, log_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +61,15 @@ async def search_memory(
     target_company = (company or query).strip()
     if not tool_context:
         raise ValueError("tool_context is required for memory search.")
+
+    start_time = time.perf_counter()
+    log_intent(
+        logger,
+        "search_memory",
+        f"Querying long-term memory for prior briefs on '{target_company}'",
+        company=target_company,
+        query=query,
+    )
 
     search_query = f"{target_company} briefing facts"
     logger.info("Querying long-term memory for target company '%s'", target_company)
@@ -117,6 +129,16 @@ async def search_memory(
 
     if not matching_entries:
         logger.info("No prior briefing history found for company '%s'", target_company)
+        duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+        log_outcome(
+            logger,
+            "search_memory",
+            f"No prior brief found for company '{target_company}' (baseline brief)",
+            status="SUCCESS",
+            duration_ms=duration_ms,
+            company=target_company,
+            has_prior=False,
+        )
         return {
             "has_prior": False,
             "changes": [],
@@ -134,6 +156,17 @@ async def search_memory(
     prior_date = most_recent["date"] or "recent"
     doc_url = most_recent["doc_url"]
 
+    duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+    log_outcome(
+        logger,
+        "search_memory",
+        f"Retrieved prior briefing record for '{target_company}' with {len(prior_facts)} historical facts",
+        status="SUCCESS",
+        duration_ms=duration_ms,
+        company=target_company,
+        has_prior=True,
+        prior_facts_count=len(prior_facts),
+    )
     logger.info(
         "Found prior briefing record for '%s' (%d historical facts, date: %s)",
         target_company,
@@ -251,6 +284,16 @@ async def initialize_briefing_session(
     Returns:
         dict: Confirmation of initialized session state.
     """
+    start_time = time.perf_counter()
+    log_intent(
+        logger,
+        "initialize_briefing_session",
+        f"Initializing briefing session state for '{company_input}'",
+        company=company_input,
+        focus_areas=focus_areas,
+        recipients=recipients,
+    )
+
     existing_prefs: dict[str, Any] = {}
     if tool_context and hasattr(tool_context, "state"):
         existing_prefs = tool_context.state.get("user_preferences") or {}
@@ -291,6 +334,18 @@ async def initialize_briefing_session(
             "focus_areas": final_focus,
             "recipients": final_recipients,
         }
+
+    duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+    log_outcome(
+        logger,
+        "initialize_briefing_session",
+        f"Initialized briefing session state for '{company_input}'",
+        status="SUCCESS",
+        duration_ms=duration_ms,
+        company=company_input,
+        focus_areas=final_focus,
+        recipients=final_recipients,
+    )
 
     return {
         "status": "initialized",

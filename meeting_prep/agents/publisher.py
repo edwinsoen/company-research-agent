@@ -8,6 +8,7 @@ from google.adk.agents import LlmAgent
 from meeting_prep.config import MODEL_NAME, enable_server_side_tools_callback
 from meeting_prep.tools.drive import create_google_doc, share_doc
 from meeting_prep.callbacks.memory import save_memory_after_publish
+from meeting_prep.callbacks.telemetry import before_agent_telemetry, after_agent_telemetry
 
 PUBLISHER_INSTRUCTION = """\
 You are an executive publishing agent.
@@ -35,6 +36,8 @@ Instructions:
 
 def check_approval_before_publish(callback_context):
     """Ensure publisher only runs if brief was explicitly approved by the human reviewer (HLD §9.4, §10.1)."""
+    before_agent_telemetry(callback_context)
+
     state = callback_context.state
     if "draft_version" not in state or state["draft_version"] is None:
         state["draft_version"] = 1
@@ -46,12 +49,21 @@ def check_approval_before_publish(callback_context):
         status = getattr(decision, "status", None)
 
     if status != "approved":
+        after_agent_telemetry(callback_context)
         from google.genai import types
         return types.Content(
             role="model",
             parts=[types.Part.from_text(text="Publishing skipped: executive brief was not approved by human reviewer.")],
         )
     return None
+
+
+async def after_publish_callback(callback_context):
+    """Save brief to Memory Bank and emit telemetry after publisher completes."""
+    try:
+        await save_memory_after_publish(callback_context)
+    finally:
+        after_agent_telemetry(callback_context)
 
 
 def create_publisher() -> LlmAgent:
@@ -62,6 +74,6 @@ def create_publisher() -> LlmAgent:
         instruction=PUBLISHER_INSTRUCTION,
         tools=[create_google_doc, share_doc],
         before_agent_callback=check_approval_before_publish,
-        after_agent_callback=save_memory_after_publish,
+        after_agent_callback=after_publish_callback,
         before_model_callback=enable_server_side_tools_callback,
     )
