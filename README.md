@@ -6,6 +6,18 @@ Source of truth and architecture design: [docs/hld.md](docs/hld.md).
 
 ---
 
+## Overview & Purpose
+
+Preparing for external meetings—whether with partners, clients, or vendors—requires actionable context about who the company is, what products they build, and what has developed recently. Conducting thorough public research manually is time-consuming, fragmented across disjointed sources, and repetitive when meeting with companies repeatedly over time. Executives and account leads often struggle to quickly isolate high-signal context and identify **what is genuinely new** since their last touchpoint.
+
+**Meeting Prep Copilot** automates this entire lifecycle as an autonomous, multi-agent research team:
+- **Grounded Parallel Research**: Concurrently maps the company's profile, extracts 90-day news events, and investigates user-specified strategic focus areas using live Google Search grounding.
+- **Continuous Memory & Delta Analysis**: Leverages long-term Memory Bank storage to track prior briefings, automatically highlighting incremental changes, new announcements, and strategic pivots since the baseline touchpoint while preloading standing user preferences.
+- **Human-In-The-Loop (HITL) Governance**: Pauses at non-blocking review gates to let the user inspect the synthesized draft, request targeted refinements routed by an LLM classifier, or approve the brief.
+- **Automated Publishing**: Directly converts approved briefs into formatted Google Docs and shares them with designated meeting participants under user-delegated authority.
+
+---
+
 ## Architecture (Phases 1–5)
 
 ```mermaid
