@@ -82,11 +82,43 @@ class TestServer(unittest.TestCase):
         self.assertIsNone(recovered)
 
     def test_decision_unknown_session(self):
-        response = self.client.post(
+        # Missing user_id returns 400 Bad Request
+        response_no_user = self.client.post(
             "/briefs/non-existent-session-id/decision",
             json={"status": "approved"},
         )
-        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response_no_user.status_code, 400)
+
+        # Provided user_id but unknown session returns 404 Not Found
+        response_with_user = self.client.post(
+            "/briefs/non-existent-session-id/decision",
+            json={"status": "approved", "user_id": "test_user"},
+        )
+        self.assertEqual(response_with_user.status_code, 404)
+
+    def test_get_brief_user_id_required(self):
+        # GET /briefs/{id} without user_id query param returns 400
+        response = self.client.get("/briefs/any-session-id")
+        self.assertEqual(response.status_code, 400)
+
+        # GET /briefs/{id}?user_id=test_user for unknown session returns 404
+        response_not_found = self.client.get("/briefs/any-session-id?user_id=test_user")
+        self.assertEqual(response_not_found.status_code, 404)
+
+    def test_derive_brief_status(self):
+        from meeting_prep.server import derive_brief_status
+
+        # 1. Pending gate -> paused
+        gate = ("call_1", "approve_brief", {})
+        self.assertEqual(derive_brief_status({}, gate), "paused")
+        self.assertEqual(derive_brief_status({"published_doc_url": "https://docs.google.com/..."}, gate), "paused")
+
+        # 2. Published doc url and no gate -> completed
+        self.assertEqual(derive_brief_status({"published_doc_url": "https://docs.google.com/..."}, None), "completed")
+
+        # 3. No gate and no published doc url (e.g. error, or revision without publication) -> failed
+        self.assertEqual(derive_brief_status({}, None), "failed")
+        self.assertEqual(derive_brief_status({"brief_draft": "# Draft"}, None), "failed")
 
 
 if __name__ == "__main__":

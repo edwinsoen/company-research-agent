@@ -49,52 +49,37 @@ runner = Runner(
 
 class CreateBriefRequest(BaseModel):
     prompt: str = Field(description="User prompt requesting executive research brief.")
-    user_id: Optional[str] = Field(default="executive_user", description="Caller user identifier.")
+    user_id: str = Field(default="executive_user", description="Caller user identifier owning the brief session.")
+    user_token: Optional[str] = Field(default=None, description="Optional user-delegated Google Drive OAuth bearer token.")
 
 
 class DecisionRequest(BaseModel):
-    status: str = Field(description="Decision status: 'approved' or 'revise'.")
+    status: Optional[str] = Field(default="approved", description="Decision status: 'approved' or 'revise'.")
     comment: Optional[str] = Field(default=None, description="Optional revision instructions.")
     candidate: Optional[dict[str, Any]] = Field(
         default=None, description="Optional selected entity candidate if resolving disambiguation."
     )
     user_id: Optional[str] = Field(default=None, description="User identifier owning the session.")
+    user_token: Optional[str] = Field(default=None, description="Optional user-delegated Google Drive OAuth bearer token.")
 
 
 async def resolve_session(session_id: str, user_id: Optional[str] = None):
-    """Retrieve session by ID, searching across registered sessions if user_id is omitted."""
-    if user_id:
-        try:
-            sess = await session_service.get_session(
-                app_name=adk_app.name,
-                user_id=user_id,
-                session_id=session_id,
-            )
-            if sess:
-                return sess
-        except Exception:
-            pass
-
-    # Search in-memory session registry across all users
-    if hasattr(session_service, "sessions"):
-        app_sessions = session_service.sessions.get(adk_app.name, {})
-        for uid, user_sessions in app_sessions.items():
-            if session_id in user_sessions:
-                return user_sessions[session_id]
-
+    """Retrieve session strictly scoped to user_id without cross-user scanning (HLD §12A.3)."""
+    if not user_id:
+        return None
     try:
         return await session_service.get_session(
             app_name=adk_app.name,
-            user_id="executive_user",
+            user_id=user_id,
             session_id=session_id,
         )
-    except Exception:
+    except Exception as err:
+        logger.debug("Failed to retrieve session %s for user %s: %s", session_id, user_id, err)
         return None
 
 
-
 class BriefResponse(BaseModel):
-    status: str = Field(description="'paused' (at gate) or 'completed' (published).")
+    status: str = Field(description="'paused' (at gate), 'completed' (published), or 'failed'.")
     brief_id: str = Field(description="Unique brief session identifier.")
     session_id: str = Field(description="ADK session identifier.")
     gate: Optional[str] = Field(default=None, description="Name of the pending gate function if paused.")
@@ -102,6 +87,15 @@ class BriefResponse(BaseModel):
     doc_url: Optional[str] = Field(default=None, description="Google Doc URL if completed.")
     draft: Optional[str] = Field(default=None, description="Generated brief markdown text.")
     version: Optional[int] = Field(default=1, description="Draft version.")
+
+
+def derive_brief_status(state: dict[str, Any], pending_gate: Optional[tuple]) -> str:
+    """Accurately derive brief status from session state and pending gate (HLD §10.3)."""
+    if pending_gate:
+        return "paused"
+    if state.get("published_doc_url"):
+        return "completed"
+    return "failed"
 
 
 def extract_gate_call_from_event(event) -> Optional[tuple[str, str, dict[str, Any]]]:
@@ -164,10 +158,14 @@ async def create_brief(req: CreateBriefRequest):
     or completion.
     """
     user_id = req.user_id or "executive_user"
+    init_state: dict[str, Any] = {}
+    if req.user_token:
+        init_state["delegated_drive_token"] = req.user_token
+
     session = await session_service.create_session(
         app_name=adk_app.name,
         user_id=user_id,
-        state={},
+        state=init_state,
     )
 
     user_msg = types.Content(
@@ -190,12 +188,13 @@ async def create_brief(req: CreateBriefRequest):
         user_id=user_id,
         session_id=session.id,
     )
-    state = updated_session.state
+    state = updated_session.state if updated_session else {}
+    brief_status = derive_brief_status(state, pending_gate)
 
     if pending_gate:
         call_id, func_name, args = pending_gate
         return BriefResponse(
-            status="paused",
+            status=brief_status,
             brief_id=session.id,
             session_id=session.id,
             gate=func_name,
@@ -205,7 +204,7 @@ async def create_brief(req: CreateBriefRequest):
         )
 
     return BriefResponse(
-        status="completed",
+        status=brief_status,
         brief_id=session.id,
         session_id=session.id,
         doc_url=state.get("published_doc_url"),
@@ -222,10 +221,15 @@ async def submit_decision(session_id: str, decision: DecisionRequest, user_id: O
     from the session's event history.
     """
     effective_user_id = decision.user_id or user_id
+    if not effective_user_id:
+        raise HTTPException(
+            status_code=400,
+            detail="user_id is required in decision payload or query parameter to resolve session.",
+        )
+
     session = await resolve_session(session_id, effective_user_id)
     if not session:
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
-    effective_user_id = session.user_id or effective_user_id or "executive_user"
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found for user '{effective_user_id}'.")
 
     pending_call = get_unanswered_pending_gate(session)
     if not pending_call:
@@ -236,17 +240,34 @@ async def submit_decision(session_id: str, decision: DecisionRequest, user_id: O
 
     call_id, func_name, _ = pending_call
 
+    # If user provided a delegated token, store in session state for downstream tools
+    if decision.user_token and hasattr(session, "state"):
+        session.state["delegated_drive_token"] = decision.user_token
+
     # Build response payload matching the pending tool contract
     if func_name == "request_disambiguation":
-        response_payload = {
-            "selected_candidate": decision.candidate or {"name": decision.comment or ""},
-            "status": "resolved",
-        }
+        if not decision.candidate and not (decision.comment and decision.comment.strip()):
+            raise HTTPException(
+                status_code=400,
+                detail="candidate entity selection (or comment) is required for request_disambiguation gate.",
+            )
+        response_payload = decision.candidate if decision.candidate is not None else {"name": decision.comment.strip()}
     else:
         # approve_brief
+        decision_status = (decision.status or "").lower().strip()
+        if decision_status not in {"approved", "revise"}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid decision status '{decision.status}'. Must be 'approved' or 'revise'.",
+            )
+        if decision_status == "revise" and not (decision.comment and decision.comment.strip()):
+            raise HTTPException(
+                status_code=400,
+                detail="Revision feedback comment is required when status is 'revise'.",
+            )
         response_payload = {
-            "status": decision.status,
-            "comment": decision.comment,
+            "status": decision_status,
+            "comment": decision.comment.strip() if decision.comment else None,
         }
 
     resume_msg = types.Content(
@@ -277,12 +298,13 @@ async def submit_decision(session_id: str, decision: DecisionRequest, user_id: O
         user_id=effective_user_id,
         session_id=session.id,
     )
-    state = updated_session.state
+    state = updated_session.state if updated_session else {}
+    brief_status = derive_brief_status(state, pending_gate)
 
     if pending_gate:
         c_id, f_name, args = pending_gate
         return BriefResponse(
-            status="paused",
+            status=brief_status,
             brief_id=session.id,
             session_id=session.id,
             gate=f_name,
@@ -292,7 +314,7 @@ async def submit_decision(session_id: str, decision: DecisionRequest, user_id: O
         )
 
     return BriefResponse(
-        status="completed",
+        status=brief_status,
         brief_id=session.id,
         session_id=session.id,
         doc_url=state.get("published_doc_url"),
@@ -304,17 +326,21 @@ async def submit_decision(session_id: str, decision: DecisionRequest, user_id: O
 @server.get("/briefs/{session_id}", response_model=BriefResponse)
 async def get_brief(session_id: str, user_id: Optional[str] = None):
     """Retrieve the current status of a brief session."""
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id query parameter is required to retrieve brief.")
+
     session = await resolve_session(session_id, user_id)
     if not session:
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found for user '{user_id}'.")
 
     pending_call = get_unanswered_pending_gate(session)
     state = session.state
+    brief_status = derive_brief_status(state, pending_call)
 
     if pending_call:
         _, f_name, args = pending_call
         return BriefResponse(
-            status="paused",
+            status=brief_status,
             brief_id=session.id,
             session_id=session.id,
             gate=f_name,
@@ -324,7 +350,7 @@ async def get_brief(session_id: str, user_id: Optional[str] = None):
         )
 
     return BriefResponse(
-        status="completed",
+        status=brief_status,
         brief_id=session.id,
         session_id=session.id,
         doc_url=state.get("published_doc_url"),

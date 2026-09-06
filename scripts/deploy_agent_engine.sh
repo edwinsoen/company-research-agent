@@ -23,12 +23,19 @@ export DEPLOYMENT_ENV="cloud"
 export GOOGLE_GENAI_USE_VERTEXAI="true"
 export ARTIFACT_BUCKET="${ARTIFACT_BUCKET}"
 
+# Generate meeting_prep/.env so ADK container packaging includes deployed environment variables
+cat <<EOF > meeting_prep/.env
+DEPLOYMENT_ENV=cloud
+GOOGLE_GENAI_USE_VERTEXAI=true
+ARTIFACT_BUCKET=${ARTIFACT_BUCKET}
+EOF
+
 # Deploy using ADK CLI with Cloud Trace / OpenTelemetry and SPIFFE Agent Identity (HLD §12A.1, §14.1)
 adk deploy agent_engine \
   --project="${PROJECT_ID}" \
   --location="${REGION}" \
   --otel_to_cloud \
-  --agent_engine_config_file="meeting_prep/.agent_engine_config.json" \
+  --artifact_service_uri="gs://${ARTIFACT_BUCKET}" \
   meeting_prep
 
 echo "✓ Deployment submitted to Vertex AI Agent Engine successfully."

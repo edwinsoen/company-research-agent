@@ -61,14 +61,15 @@ def enable_server_side_tools_callback(callback_context=None, llm_request=None, *
 
 
 DEPLOYMENT_ENV = os.getenv("DEPLOYMENT_ENV", "local").lower()
-ARTIFACT_BUCKET = os.getenv("ARTIFACT_BUCKET", f"{PROJECT_ID}-artifacts")
+ARTIFACT_BUCKET = os.getenv("ARTIFACT_BUCKET", f"{PROJECT_ID}-meeting_prep-artifacts")
 
 
 def get_session_service():
     """Return VertexAiSessionService if DEPLOYMENT_ENV=='cloud', else InMemorySessionService."""
     if os.getenv("DEPLOYMENT_ENV", "local").lower() == "cloud":
         from google.adk.sessions import VertexAiSessionService
-        return VertexAiSessionService(project=PROJECT_ID, location=LOCATION)
+        agent_engine_id = os.getenv("AGENT_ENGINE_ID")
+        return VertexAiSessionService(project=PROJECT_ID, location=LOCATION, agent_engine_id=agent_engine_id)
     from google.adk.sessions import InMemorySessionService
     return InMemorySessionService()
 
@@ -77,6 +78,7 @@ def get_artifact_service():
     """Return GcsArtifactService if DEPLOYMENT_ENV=='cloud', else InMemoryArtifactService."""
     if os.getenv("DEPLOYMENT_ENV", "local").lower() == "cloud":
         from google.adk.artifacts import GcsArtifactService
-        return GcsArtifactService(bucket_name=os.getenv("ARTIFACT_BUCKET", f"{PROJECT_ID}-artifacts"))
+        bucket = os.getenv("ARTIFACT_BUCKET", f"{PROJECT_ID}-meeting_prep-artifacts")
+        return GcsArtifactService(bucket_name=bucket)
     from google.adk.artifacts import InMemoryArtifactService
     return InMemoryArtifactService()

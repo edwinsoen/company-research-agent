@@ -3,7 +3,7 @@ output "artifact_bucket_name" {
   value       = google_storage_bucket.artifacts.name
 }
 
-output "agent_identity_email" {
-  description = "SPIFFE Agent Identity service account email"
-  value       = google_service_account.agent_identity.email
+output "agent_identity_principal" {
+  description = "SPIFFE Agent Identity principal configured for IAM bindings"
+  value       = var.agent_identity_principal
 }
