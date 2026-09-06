@@ -10,10 +10,13 @@ Source: docs/hld.md §10.2, §10.3, §12.2
 import argparse
 import asyncio
 import json
+import logging
 import os
 import sys
 import time
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 from google.adk.artifacts import InMemoryArtifactService
 from google.adk.memory import InMemoryMemoryService

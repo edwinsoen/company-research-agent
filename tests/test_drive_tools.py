@@ -359,5 +359,33 @@ class TestDriveTools(unittest.TestCase):
             self.assertEqual(mock_session.post.call_count, 1, "Permanent 400 must NOT be retried!")
 
 
+    def test_load_delegated_drive_token_refresh_failure_fallback(self):
+        """Verify load_delegated_drive_token logs warning without NameError and returns cached token on refresh error."""
+        import tempfile
+        import json
+        from unittest.mock import patch
+        from meeting_prep.cli import load_delegated_drive_token
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tf:
+            json.dump({
+                "access_token": "cached_access_token_123",
+                "refresh_token": "mock_refresh_token",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "client_id": "mock_client_id",
+                "client_secret": "mock_client_secret",
+            }, tf)
+            tf_path = tf.name
+
+        try:
+            with patch.dict(os.environ, {"DRIVE_CREDENTIALS_FILE": tf_path}):
+                with patch("google.oauth2.credentials.Credentials.refresh", side_effect=RuntimeError("Revoked grant simulation")):
+                    token = load_delegated_drive_token()
+                    # Must return the cached access token rather than None or raising NameError
+                    self.assertEqual(token, "cached_access_token_123")
+        finally:
+            if os.path.isfile(tf_path):
+                os.remove(tf_path)
+
+
 if __name__ == '__main__':
     unittest.main()
