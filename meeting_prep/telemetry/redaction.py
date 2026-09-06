@@ -43,14 +43,14 @@ EMAIL_PATTERN = re.compile(
     r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
 )
 
-# Phone numbers: e.g. +1-555-123-4567, (555) 123-4567, 555-123-4567, +44 20 7123 4567
+# Phone numbers: requires standard separators or parentheses/country code to avoid matching continuous integer IDs (e.g. GCP project numbers)
 PHONE_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9])(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}(?![A-Za-z0-9])"
+    r"(?<![A-Za-z0-9])(?:\+\d{1,3}[-.\s]?)?(?:\(\d{2,4}\)[-.\s]?|\b\d{2,4}[-.\s])\d{3,4}[-.\s]\d{3,4}\b"
 )
 
 # OAuth / Bearer tokens: e.g. Bearer <token>
 BEARER_TOKEN_PATTERN = re.compile(
-    r"(?i)\b(?:bearer|token)\s+([A-Za-z0-9\-._~+/]+=*)",
+    r"(?i)\bBearer\s+([A-Za-z0-9\-._~+/]{16,}=*)",
 )
 _OAUTH_PREFIX = "ya" + "29"
 YA29_TOKEN_PATTERN = re.compile(
@@ -65,6 +65,10 @@ API_KEY_PATTERN = re.compile(
 # IPv4 Addresses: e.g. 192.168.1.1, 10.0.0.1
 IPV4_PATTERN = re.compile(
     r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b"
+)
+
+_VERSION_PREFIX_PATTERN = re.compile(
+    r"(?i)(?:\b(?:version|ver|v|release|build|rev)\b[:\s=]*|\bv(?=\d))"
 )
 
 # Credit card numbers: e.g. 4532-1234-5678-9012
@@ -94,6 +98,15 @@ def mask_email_match(match: re.Match) -> str:
     return f"{masked_user}@{domain}"
 
 
+def mask_ip_match(match: re.Match) -> str:
+    """Mask IPv4 address while preserving 4-part semantic version numbers."""
+    start = match.start()
+    prefix = match.string[max(0, start - 20):start]
+    if _VERSION_PREFIX_PATTERN.search(prefix):
+        return match.group(0)
+    return "[IP_REDACTED]"
+
+
 class RedactionPipeline:
     """Multi-entity PII redaction pipeline with recursive structure traversal."""
 
@@ -108,7 +121,7 @@ class RedactionPipeline:
     ) -> None:
         self.rules: list[tuple[re.Pattern, Any]] = []
         if mask_tokens:
-            self.rules.append((BEARER_TOKEN_PATTERN, "[BEARER_TOKEN_REDACTED]"))
+            self.rules.append((BEARER_TOKEN_PATTERN, "Bearer [BEARER_TOKEN_REDACTED]"))
             self.rules.append((YA29_TOKEN_PATTERN, "[BEARER_TOKEN_REDACTED]"))
         if mask_api_keys:
             self.rules.append((API_KEY_PATTERN, "[API_KEY_REDACTED]"))
@@ -119,7 +132,7 @@ class RedactionPipeline:
         if mask_cards:
             self.rules.append((CREDIT_CARD_PATTERN, "[CARD_REDACTED]"))
         if mask_ips:
-            self.rules.append((IPV4_PATTERN, "[IP_REDACTED]"))
+            self.rules.append((IPV4_PATTERN, mask_ip_match))
 
     def redact_text(self, text: str) -> str:
         """Sanitize a raw string against all active PII and secret patterns."""

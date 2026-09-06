@@ -52,7 +52,7 @@ class TestObservability(unittest.TestCase):
         oauth_prefix = "ya" + "29"
         self.assertEqual(
             pipeline.redact_text(f"Header: Bearer {oauth_prefix}.a0AfH6SMD_secret12345678901234567890"),
-            "Header: [BEARER_TOKEN_REDACTED]",
+            "Header: Bearer [BEARER_TOKEN_REDACTED]",
         )
         self.assertEqual(
             pipeline.redact_text(f"Standalone {oauth_prefix}.a0AfH6SMD_secret12345678901234567890 token"),
@@ -264,6 +264,92 @@ class TestObservability(unittest.TestCase):
             self.assertTrue(ctx.is_valid)
             self.assertNotEqual(ctx.trace_id, 0)
             self.assertNotEqual(ctx.span_id, 0)
+
+    def test_redaction_precision_no_false_positives(self):
+        """Verify Finding 5: Ordinary prose and resource paths are not falsely redacted."""
+        pipeline = RedactionPipeline()
+
+        # 1. Bearer token does not redact ordinary 'token' word
+        self.assertEqual(
+            pipeline.redact_text("the token is stale"),
+            "the token is stale",
+        )
+        self.assertEqual(
+            pipeline.redact_text("refresh token failed due to expiration"),
+            "refresh token failed due to expiration",
+        )
+        self.assertEqual(
+            pipeline.redact_text("Authorization: Bearer secrettoken1234567890"),
+            "Authorization: Bearer [BEARER_TOKEN_REDACTED]",
+        )
+
+        # 2. GCP resource paths and integer IDs are not redacted as phone numbers
+        self.assertEqual(
+            pipeline.redact_text("projects/my-proj-123456789012/locations/us-central1"),
+            "projects/my-proj-123456789012/locations/us-central1",
+        )
+        self.assertEqual(
+            pipeline.redact_text("Reasoning Engine ID 1828942485049573376 deployed"),
+            "Reasoning Engine ID 1828942485049573376 deployed",
+        )
+
+        # 3. 4-part semantic version numbers are not redacted as IPv4 addresses
+        self.assertEqual(
+            pipeline.redact_text("version 1.10.0.1 released"),
+            "version 1.10.0.1 released",
+        )
+        self.assertEqual(
+            pipeline.redact_text("ver 1.10.0.1"),
+            "ver 1.10.0.1",
+        )
+        self.assertEqual(
+            pipeline.redact_text("Release: 1.10.0.1 deployed"),
+            "Release: 1.10.0.1 deployed",
+        )
+        self.assertEqual(
+            pipeline.redact_text("Host 192.168.1.50 connected"),
+            "Host [IP_REDACTED] connected",
+        )
+
+    def test_agent_telemetry_concurrency_isolation(self):
+        """Verify Finding 4: Concurrent agent invocations do not corrupt each other's start times or latencies."""
+        import time
+        from meeting_prep.callbacks.telemetry import (
+            before_agent_telemetry,
+            after_agent_telemetry,
+        )
+
+        class MockCallbackContext:
+            def __init__(self, agent_name: str, invocation_id: str):
+                self.agent_name = agent_name
+                self.invocation_id = invocation_id
+                self.session_id = f"session-{invocation_id}"
+                self.state = {"company_input": "TestCorp"}
+
+        ctx_a = MockCallbackContext("profile_researcher", "inv-A")
+        ctx_b = MockCallbackContext("profile_researcher", "inv-B")
+
+        # Start A
+        before_agent_telemetry(ctx_a)
+        time.sleep(0.05)
+
+        # Start B concurrently for the exact same agent name
+        before_agent_telemetry(ctx_b)
+        time.sleep(0.05)
+
+        # End A first (ran ~0.10s)
+        after_agent_telemetry(ctx_a)
+        time.sleep(0.05)
+
+        # End B second (ran ~0.10s)
+        after_agent_telemetry(ctx_b)
+
+        provenance_a = ctx_a.state.get("brief_provenance", {}).get("Company Profile", {})
+        provenance_b = ctx_b.state.get("brief_provenance", {}).get("Company Profile", {})
+
+        self.assertGreaterEqual(provenance_a.get("latency_s", 0), 0.08)
+        self.assertGreaterEqual(provenance_b.get("latency_s", 0), 0.08)
+        self.assertNotEqual(provenance_b.get("latency_s"), 0.0)
 
 
 if __name__ == "__main__":

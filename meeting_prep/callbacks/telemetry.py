@@ -266,12 +266,41 @@ def record_hitl_wait_span(
 # -----------------------------------------------------------------------------
 
 _AGENT_START_TIMES: dict[str, float] = {}
+_MAX_START_TIMES_ENTRIES = 1000
+_ENTRY_TTL_SECONDS = 600.0  # 10 minutes
+
+
+def _get_context_start_key(callback_context: Any, agent_name: str) -> str:
+    """Generate an invocation-scoped or context-scoped unique key for tracking start times."""
+    inv_id = getattr(callback_context, "invocation_id", None) or getattr(callback_context, "session_id", None)
+    if inv_id:
+        return f"{inv_id}:{agent_name}"
+    return f"{id(callback_context)}:{agent_name}"
 
 
 def before_agent_telemetry(callback_context: Any) -> None:
     """Agent before_agent lifecycle hook recording intent and starting timer."""
     agent_name = getattr(callback_context, "agent_name", "unknown_agent")
-    _AGENT_START_TIMES[agent_name] = time.perf_counter()
+    now = time.perf_counter()
+
+    # 1. Store directly on callback_context to eliminate inter-request concurrency collisions
+    try:
+        setattr(callback_context, "_telemetry_start_time", now)
+    except Exception:
+        pass
+
+    # 2. Keyed dictionary entry as fallback and bounded cleanup to prevent memory leaks if agent raises
+    key = _get_context_start_key(callback_context, agent_name)
+    _AGENT_START_TIMES[key] = now
+
+    if len(_AGENT_START_TIMES) > 200:
+        stale_keys = [k for k, v in _AGENT_START_TIMES.items() if (now - v) > _ENTRY_TTL_SECONDS]
+        for k in stale_keys:
+            _AGENT_START_TIMES.pop(k, None)
+        if len(_AGENT_START_TIMES) > _MAX_START_TIMES_ENTRIES:
+            sorted_keys = sorted(_AGENT_START_TIMES.keys(), key=lambda k: _AGENT_START_TIMES[k])
+            for k in sorted_keys[: len(sorted_keys) // 2]:
+                _AGENT_START_TIMES.pop(k, None)
 
     state = callback_context.state or {}
     company = state.get("company_input") or (state.get("resolved_entity") or {}).get("name") or "Unknown"
@@ -288,7 +317,18 @@ def before_agent_telemetry(callback_context: Any) -> None:
 def after_agent_telemetry(callback_context: Any) -> None:
     """Agent after_agent lifecycle hook recording outcome, subagent attributes, and provenance."""
     agent_name = getattr(callback_context, "agent_name", "unknown_agent")
-    start_time = _AGENT_START_TIMES.pop(agent_name, None)
+
+    # Retrieve start time with preference for context attribute, then context-keyed dict, then legacy fallback
+    start_time = getattr(callback_context, "_telemetry_start_time", None)
+    key = _get_context_start_key(callback_context, agent_name)
+    if start_time is None:
+        start_time = _AGENT_START_TIMES.pop(key, None)
+        if start_time is None:
+            start_time = _AGENT_START_TIMES.pop(agent_name, None)
+    else:
+        _AGENT_START_TIMES.pop(key, None)
+        _AGENT_START_TIMES.pop(agent_name, None)
+
     duration_s = (time.perf_counter() - start_time) if start_time else 0.0
     duration_ms = round(duration_s * 1000, 2)
 
