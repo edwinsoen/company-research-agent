@@ -32,15 +32,41 @@ cat > "${ENV_FILE}" <<EOF
 DEPLOYMENT_ENV=cloud
 GOOGLE_GENAI_USE_VERTEXAI=true
 ARTIFACT_BUCKET=${ARTIFACT_BUCKET}
+GOOGLE_CLOUD_LOCATION=global
+MODEL_NAME=${MODEL_NAME:-gemini-3.7-flash}
 EOF
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# Resolve ADK executable (check PATH, .venv/bin/adk, or python -m google.adk.cli)
+if command -v adk >/dev/null 2>&1; then
+  ADK_CMD="adk"
+elif [ -x "${REPO_ROOT}/.venv/bin/adk" ]; then
+  ADK_CMD="${REPO_ROOT}/.venv/bin/adk"
+elif [ -x "${REPO_ROOT}/.venv/bin/python" ]; then
+  ADK_CMD="${REPO_ROOT}/.venv/bin/python -m google.adk.cli"
+else
+  echo "Error: 'adk' command not found on PATH or in ${REPO_ROOT}/.venv." >&2
+  echo "Please activate your virtual environment: source .venv/bin/activate" >&2
+  exit 1
+fi
+
+AGENT_ENGINE_ID="${AGENT_ENGINE_ID:-${REASONING_ENGINE_ID:-}}"
+EXTRA_ARGS=()
+if [ -n "${AGENT_ENGINE_ID}" ]; then
+  echo "   Target Engine:   ${AGENT_ENGINE_ID} (updating existing instance)"
+  EXTRA_ARGS+=(--agent_engine_id="${AGENT_ENGINE_ID}")
+fi
+
 # Deploy using ADK CLI with Cloud Trace / OpenTelemetry and SPIFFE Agent Identity (HLD §12A.1, §14.1)
-adk deploy agent_engine \
+${ADK_CMD} deploy agent_engine \
   --project="${PROJECT_ID}" \
-  --location="${REGION}" \
+  --region="${REGION}" \
   --otel_to_cloud \
   --artifact_service_uri="gs://${ARTIFACT_BUCKET}" \
   --env_file="${ENV_FILE}" \
+  ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
   meeting_prep
 
 echo "✓ Deployment submitted to Vertex AI Agent Engine successfully."

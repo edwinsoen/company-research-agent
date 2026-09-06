@@ -18,3 +18,11 @@ build/
 # ADK Local Artifacts & Caches
 .adk/
 .pytest_cache/
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+.terraform.lock.hcl
+

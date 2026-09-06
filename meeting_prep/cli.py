@@ -29,84 +29,166 @@ def print_banner():
     print("=" * 72)
 
 
+def print_event_log(event):
+    """Print readable agent and tool activity from an event (supports both dict and Event object)."""
+    if isinstance(event, dict):
+        agent_name = event.get("author") or event.get("agent_name") or "system"
+        content = event.get("content") or {}
+        parts = content.get("parts") or []
+        for part in parts:
+            fc = part.get("function_call") or part.get("functionCall")
+            fr = part.get("function_response") or part.get("functionResponse")
+            text = part.get("text")
+            if fc:
+                print(f"   🔧 [{agent_name}] Tool: {fc.get('name')}({json.dumps(fc.get('args') or {})[:70]}...)")
+            elif fr:
+                print(f"   ✅ [{agent_name}] Tool Result: {fr.get('name')}")
+            elif text and agent_name not in ("root_coordinator", "user"):
+                first_line = text.strip().split("\n")[0][:80]
+                if first_line:
+                    print(f"   💬 [{agent_name}]: {first_line}")
+        return
+
+    agent_name = getattr(event, "author", None) or getattr(event, "agent_name", None) or "system"
+    content = getattr(event, "content", None)
+    if content and hasattr(content, "parts"):
+        for part in content.parts:
+            fc = getattr(part, "function_call", None)
+            fr = getattr(part, "function_response", None)
+            text = getattr(part, "text", None)
+            if fc:
+                print(f"   🔧 [{agent_name}] Tool: {fc.name}({json.dumps(fc.args or {})[:70]}...)")
+            elif fr:
+                print(f"   ✅ [{agent_name}] Tool Result: {fr.name}")
+            elif text and agent_name not in ("root_coordinator", "user"):
+                first_line = text.strip().split("\n")[0][:80]
+                if first_line:
+                    print(f"   💬 [{agent_name}]: {first_line}")
+
+
 def extract_pending_gate(event) -> Optional[tuple[str, str, dict[str, Any]]]:
     """Extract (call_id, function_name, args) from a non-partial long-running event."""
-    lr_ids = getattr(event, "long_running_tool_ids", None)
-    if not lr_ids:
-        return None
-    if getattr(event, "partial", False):
+    if isinstance(event, dict):
+        if event.get("partial", False):
+            return None
+        lr_ids = event.get("long_running_tool_ids") or event.get("longRunningToolIds") or []
+        if not lr_ids:
+            return None
+        content = event.get("content") or {}
+        parts = content.get("parts") or []
+        for part in parts:
+            fc = part.get("function_call") or part.get("functionCall")
+            if fc and fc.get("id") in lr_ids:
+                return (fc.get("id"), fc.get("name"), fc.get("args") or {})
         return None
 
+    lr_ids = getattr(event, "long_running_tool_ids", None)
+    if not lr_ids or getattr(event, "partial", False):
+        return None
     content = getattr(event, "content", None)
     if not content or not content.parts:
         return None
-
     for part in content.parts:
         fc = getattr(part, "function_call", None)
         if fc and fc.id in lr_ids:
             return (fc.id, fc.name, fc.args or {})
-
     return None
+
+
+def _patch_engine_methods(engine: Any) -> None:
+    """Binds operations from engine schema when Vertex AI SDK skips them due to unsupported api_modes (like async in ADK 2.8)."""
+    import types
+    from vertexai.reasoning_engines import _reasoning_engines
+
+    for schema in engine.operation_schemas():
+        mode = schema.get("api_mode", "")
+        m_name = schema.get("name")
+        if not m_name or hasattr(engine, m_name):
+            continue
+        m_doc = schema.get("description", "")
+        if mode == "":
+            fn = _reasoning_engines._wrap_query_operation(method_name=m_name, doc=m_doc)
+            setattr(engine, m_name, types.MethodType(fn, engine))
+        elif mode == "stream":
+            fn = _reasoning_engines._wrap_stream_query_operation(method_name=m_name, doc=m_doc)
+            setattr(engine, m_name, types.MethodType(fn, engine))
 
 
 async def run_pipeline(
     user_prompt: str,
     user_id: str = "executive_user",
+    engine_id: Optional[str] = None,
 ):
     print_banner()
-    session_service = InMemorySessionService()
-    artifact_service = InMemoryArtifactService()
+    if engine_id:
+        print(f"   Mode: Remote Deployed Agent Engine ({engine_id})")
+    else:
+        print("   Mode: Local In-Process Runner")
+    print("=" * 72)
 
-    # Initial state begins empty; root_coordinator_step extracts
-    # company_input, focus_areas, and recipients from the free text prompt.
-    session = await session_service.create_session(
-        app_name=app.name,
-        user_id=user_id,
-        state={},
-    )
+    if engine_id:
+        import vertexai
+        from vertexai.preview import reasoning_engines
 
-    runner = Runner(
-        app=app,
-        session_service=session_service,
-        artifact_service=artifact_service,
-    )
+        vertexai.init(project=PROJECT_ID, location=LOCATION)
+        engine = reasoning_engines.ReasoningEngine(engine_id)
+        _patch_engine_methods(engine)
+        session = engine.create_session(user_id=user_id)
+        session_id = session.get("id") if isinstance(session, dict) else session.id
+        print(f"   Session Created: {session_id}")
+    else:
+        session_service = InMemorySessionService()
+        artifact_service = InMemoryArtifactService()
+        session = await session_service.create_session(
+            app_name=app.name,
+            user_id=user_id,
+            state={},
+        )
+        session_id = session.id
+        runner = Runner(
+            app=app,
+            session_service=session_service,
+            artifact_service=artifact_service,
+        )
 
     next_message = types.Content(
         role="user",
         parts=[types.Part.from_text(text=user_prompt)],
     )
 
+    async def get_current_state() -> dict[str, Any]:
+        if engine_id:
+            s = engine.get_session(user_id=user_id, session_id=session_id)
+            return s.get("state", {}) if isinstance(s, dict) else getattr(s, "state", {})
+        s = await session_service.get_session(app_name=app.name, user_id=user_id, session_id=session_id)
+        return s.state
+
     iteration = 1
     while True:
         pending_gate = None
         print(f"\n[Leg {iteration}] Executing agent pipeline...")
 
-        async for event in runner.run_async(
-            user_id=user_id,
-            session_id=session.id,
-            new_message=next_message,
-        ):
-            agent_name = getattr(event, "author", None) or getattr(event, "agent_name", None) or "system"
-            content = getattr(event, "content", None)
-
-            if content and hasattr(content, "parts"):
-                for part in content.parts:
-                    fc = getattr(part, "function_call", None)
-                    fr = getattr(part, "function_response", None)
-                    text = getattr(part, "text", None)
-
-                    if fc:
-                        print(f"   🔧 [{agent_name}] Tool: {fc.name}({json.dumps(fc.args or {})[:70]}...)")
-                    elif fr:
-                        print(f"   ✅ [{agent_name}] Tool Result: {fr.name}")
-                    elif text and agent_name not in ("root_coordinator", "user"):
-                        first_line = text.strip().split("\n")[0][:80]
-                        if first_line:
-                            print(f"   💬 [{agent_name}]: {first_line}")
-
-            gate = extract_pending_gate(event)
-            if gate:
-                pending_gate = gate
+        if engine_id:
+            msg_payload = next_message.model_dump(mode="json", exclude_none=True)
+            for event in engine.stream_query(
+                message=msg_payload,
+                user_id=user_id,
+                session_id=session_id,
+            ):
+                print_event_log(event)
+                gate = extract_pending_gate(event)
+                if gate:
+                    pending_gate = gate
+        else:
+            async for event in runner.run_async(
+                user_id=user_id,
+                session_id=session_id,
+                new_message=next_message,
+            ):
+                print_event_log(event)
+                gate = extract_pending_gate(event)
+                if gate:
+                    pending_gate = gate
 
         if not pending_gate:
             print("\n🎉 Pipeline execution completed!")
@@ -118,8 +200,8 @@ async def run_pipeline(
         # Handle Gate 1: Entity Disambiguation
         if func_name == "request_disambiguation":
             candidates = func_args.get("candidates", [])
-            curr_sess = await session_service.get_session(app_name=app.name, user_id=user_id, session_id=session.id)
-            comp_name = curr_sess.state.get("company_input") or "the specified company"
+            state = await get_current_state()
+            comp_name = state.get("company_input") or "the specified company"
             print("\n" + "-" * 72)
             print("🔍 [HITL Gate 1: Entity Disambiguation Required]")
             print(f"   The company '{comp_name}' matched multiple candidates:")
@@ -136,8 +218,7 @@ async def run_pipeline(
                     choice = int(raw_input)
             except (EOFError, KeyboardInterrupt):
                 print("\n\n⚠️ Input cancelled. Leaving session paused at disambiguation gate.")
-                curr = await session_service.get_session(app_name=app.name, user_id=user_id, session_id=session.id)
-                return curr.state
+                return await get_current_state()
 
             selected = candidates[choice - 1] if candidates else {}
             print(f"   Selected: {selected.get('name')}")
@@ -170,8 +251,7 @@ async def run_pipeline(
                 action = input("\nDecision: [A]pprove & Publish, or [R]evise with feedback? [a/r]: ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 print("\n\n⚠️ Input cancelled. Leaving session paused at draft review gate.")
-                curr = await session_service.get_session(app_name=app.name, user_id=user_id, session_id=session.id)
-                return curr.state
+                return await get_current_state()
 
             if action.startswith("r"):
                 comment = ""
@@ -180,8 +260,7 @@ async def run_pipeline(
                         comment = input("Enter revision feedback: ").strip()
                     except (EOFError, KeyboardInterrupt):
                         print("\n\n⚠️ Input cancelled. Leaving session paused at draft review gate.")
-                        curr = await session_service.get_session(app_name=app.name, user_id=user_id, session_id=session.id)
-                        return curr.state
+                        return await get_current_state()
                     if not comment:
                         print("Revision feedback cannot be empty. Please specify what needs updating (or press Ctrl-C to abort).")
 
@@ -192,8 +271,7 @@ async def run_pipeline(
                 print("\n✅ Resuming with APPROVAL. Proceeding to publish...")
             else:
                 print(f"\n⚠️ Input '{action}' cancelled or invalid. Leaving session paused at draft review gate.")
-                curr = await session_service.get_session(app_name=app.name, user_id=user_id, session_id=session.id)
-                return curr.state
+                return await get_current_state()
 
             next_message = types.Content(
                 role="user",
@@ -211,14 +289,15 @@ async def run_pipeline(
             print(f"Unknown gate: {func_name}")
             break
 
-    final_session = await session_service.get_session(app_name=app.name, user_id=user_id, session_id=session.id)
-    doc_url = final_session.state.get("published_doc_url")
+    final_state = await get_current_state()
+    doc_url = final_state.get("published_doc_url")
     if doc_url:
         print(f"\n📎 Published Google Doc: {doc_url}")
-    return final_session.state
+    return final_state
 
 
 def main():
+    import os
     parser = argparse.ArgumentParser(
         description="Meeting Prep Copilot Interactive CLI — accepts free text meeting briefing requests."
     )
@@ -232,6 +311,12 @@ def main():
         type=str,
         default="executive_user",
         help="User ID for session tracking (default: executive_user)",
+    )
+    parser.add_argument(
+        "--engine-id",
+        type=str,
+        default=os.getenv("AGENT_ENGINE_ID") or os.getenv("REASONING_ENGINE_ID"),
+        help="Vertex AI Agent Engine ID to run interactively against deployed runtime (default: $AGENT_ENGINE_ID or local in-process)",
     )
 
     args = parser.parse_args()
@@ -252,6 +337,7 @@ def main():
     asyncio.run(run_pipeline(
         user_prompt=user_prompt,
         user_id=args.user_id,
+        engine_id=args.engine_id,
     ))
 
 
