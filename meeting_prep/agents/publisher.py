@@ -30,8 +30,8 @@ Instructions:
    - markdown: {brief_draft}
    - brief_id: "{resolved_entity.name}"
    - version: {draft_version}
-2. If recipients are provided, call `share_doc` with the returned doc_id and recipient emails.
-3. Return a confirmation message with the published doc_url.
+2. If recipients are provided and doc creation succeeded, call `share_doc` with the returned doc_id and recipient emails.
+3. If doc creation succeeded, return a confirmation message with the published doc_url. If doc creation failed or returned an error, report the error clearly.
 """
 
 

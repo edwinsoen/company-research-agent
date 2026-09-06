@@ -50,7 +50,14 @@ def print_event_log(event):
             if fc:
                 print(f"   🔧 [{agent_name}] Tool: {fc.get('name')}({json.dumps(fc.get('args') or {})[:70]}...)")
             elif fr:
-                print(f"   ✅ [{agent_name}] Tool Result: {fr.get('name')}")
+                tool_name = fr.get("name") or "tool"
+                resp = fr.get("response") or {}
+                if isinstance(resp, dict) and resp.get("error"):
+                    print(f"   ❌ [{agent_name}] Tool Error: {tool_name} — {resp.get('error')[:120]}")
+                elif isinstance(resp, dict) and resp.get("doc_url"):
+                    print(f"   ✅ [{agent_name}] Tool Result: {tool_name} -> {resp.get('doc_url')}")
+                else:
+                    print(f"   ✅ [{agent_name}] Tool Result: {tool_name}")
             elif text and agent_name not in ("root_coordinator", "user"):
                 first_line = text.strip().split("\n")[0][:80]
                 if first_line:
@@ -67,7 +74,14 @@ def print_event_log(event):
             if fc:
                 print(f"   🔧 [{agent_name}] Tool: {fc.name}({json.dumps(fc.args or {})[:70]}...)")
             elif fr:
-                print(f"   ✅ [{agent_name}] Tool Result: {fr.name}")
+                tool_name = getattr(fr, "name", "tool")
+                resp = getattr(fr, "response", {})
+                if isinstance(resp, dict) and resp.get("error"):
+                    print(f"   ❌ [{agent_name}] Tool Error: {tool_name} — {resp.get('error')[:120]}")
+                elif isinstance(resp, dict) and resp.get("doc_url"):
+                    print(f"   ✅ [{agent_name}] Tool Result: {tool_name} -> {resp.get('doc_url')}")
+                else:
+                    print(f"   ✅ [{agent_name}] Tool Result: {tool_name}")
             elif text and agent_name not in ("root_coordinator", "user"):
                 first_line = text.strip().split("\n")[0][:80]
                 if first_line:
@@ -141,11 +155,14 @@ def load_delegated_drive_token() -> Optional[str]:
             client_secret=data.get("client_secret"),
             scopes=["https://www.googleapis.com/auth/drive.file"],
         )
-        if not creds.valid:
-            creds.refresh(Request())
-            data["access_token"] = creds.token
-            with open(token_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
+        if creds.refresh_token:
+            try:
+                creds.refresh(Request())
+                data["access_token"] = creds.token
+                with open(token_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+            except Exception as refresh_err:
+                logger.warning("Could not refresh token with refresh_token: %s", refresh_err)
         return creds.token
     except Exception as err:
         print(f"   ⚠️ Could not refresh delegated Drive token: {err}")
