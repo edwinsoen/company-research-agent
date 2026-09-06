@@ -42,7 +42,7 @@ flowchart TD
    - **`root_coordinator`**: Ingests free-text prompts, extracts target company, focus topics, and recipient lists.
    - **`entity_disambiguator`**: Verifies company domain and business entity.
    - **Parallel Researchers**: Concurrently executes company profile analysis, recent news retrieval, and user-specified focus area deep dives.
-   - **`delta_agent`**: Computes the incremental delta against prior briefings (the memory bank backend is stubbed until Phase 5).
+   - **`delta_agent`**: Computes the incremental delta against prior briefings retrieved from Memory Bank (`has_prior`, structured fact comparisons, and recency sorting per HLD §9).
    - **`composer`**: Synthesizes findings into an executive markdown briefing with structured sections.
 
 2. **Human-In-The-Loop (HITL) Workflow (Phase 2)**:
@@ -119,6 +119,12 @@ Run the standalone verification suites for each phase:
 
 # Phase 3: Document publishing and double-approval idempotency
 .venv/bin/python scripts/run_phase3.py
+
+# Phase 5 (Local): Long-term Memory Bank, preference preloading, and cross-session delta
+.venv/bin/python scripts/run_phase5.py
+
+# Phase 5 (Remote): End-to-end verification against deployed Vertex AI Agent Engine
+.venv/bin/python scripts/verify_remote_memory.py [AGENT_ENGINE_ID]
 ```
 
 ### 3. Running Unit Tests

@@ -26,21 +26,35 @@ Inputs from research:
 Requirements:
 1. Synthesize ONLY from the provided structured findings. Do not hallucinate external claims.
 2. Every claim made in the brief MUST include an inline Markdown link to its source URL (e.g. "[claim text](source_url)").
-3. Maintain a clean, fixed section structure:
+3. Maintain a clean, structured section layout:
    # Executive Brief: {resolved_entity.name}
    *Generated for meeting preparation*
 
-   ## 1. Company Profile & Business Model
-   (Synthesize findings from research_profile into 2-3 concise paragraphs or structured bullet points with inline citations)
+   - If a prior brief exists ({delta_summary.has_prior} is True), LEAD WITH THE DELTA SECTION (HLD §16):
+     ## 1. Changes Since Prior Brief (Delta)
+     (Explicitly render the delta changes comparing current vs prior findings with inline citations)
 
-   ## 2. Changes Since Prior Brief
-   (Explicitly render the delta. If no prior brief exists, state clearly: "*No prior briefing on record. Establishing initial baseline.*")
+     ## 2. Company Profile & Business Model
+     (Synthesize findings from research_profile into 2-3 concise paragraphs or structured bullet points with inline citations)
 
-   ## 3. Recent Developments (Last 90 Days)
-   (Synthesize dated findings from research_news, highlighting key announcements, dates, and significance with inline citations)
+     ## 3. Recent Developments (Last 90 Days)
+     (Synthesize dated findings from research_news, highlighting key announcements, dates, and significance with inline citations)
 
-   ## 4. Strategic Focus Areas
-   (Synthesize findings from research_focus. If no custom focus areas were set or findings are empty, note "*Standard profile requested; no custom focus areas specified.*")
+     ## 4. Strategic Focus Areas
+     (Synthesize findings from research_focus. If no custom focus areas were set or findings are empty, note "*Standard profile requested; no custom focus areas specified.*")
+
+   - If no prior brief exists ({delta_summary.has_prior} is False, baseline briefing):
+     ## 1. Company Profile & Business Model
+     (Synthesize findings from research_profile into 2-3 concise paragraphs or structured bullet points with inline citations)
+
+     ## 2. Changes Since Prior Brief
+     *No prior briefing on record. Establishing initial baseline.*
+
+     ## 3. Recent Developments (Last 90 Days)
+     (Synthesize dated findings from research_news, highlighting key announcements, dates, and significance with inline citations)
+
+     ## 4. Strategic Focus Areas
+     (Synthesize findings from research_focus. If no custom focus areas were set or findings are empty, note "*Standard profile requested; no custom focus areas specified.*")
 
 4. REFINEMENT MODE (When Prior Draft and Refinement Directive are present):
    - Update ONLY the specific section targeted by the refinement directive/target using the refreshed research findings.

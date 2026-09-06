@@ -195,6 +195,10 @@ async def main() -> int:
     for c in changes_2:
         print(f"        • {c}")
 
+    if not focus_2 or len(focus_2) == 0:
+        print("      ❌ FAILED: Run 2 expected preloaded focus areas from memory.")
+        return 1
+
     if not has_prior_2:
         print("      ❌ FAILED: Run 2 expected has_prior == True from prior brief in memory.")
         return 1
@@ -203,7 +207,7 @@ async def main() -> int:
         print("      ❌ FAILED: Run 2 delta changes list is empty.")
         return 1
 
-    print("      ✅ Run 2 successfully retrieved prior brief and computed delta!")
+    print("      ✅ Run 2 successfully preloaded preferences, retrieved prior brief, and computed delta!")
 
     # -----------------------------------------------------------------
     # Summary

@@ -1,9 +1,13 @@
 """Configuration for Meeting Prep Copilot."""
 
+import logging
 import os
+import re
 from typing import Any, Optional
 from dotenv import load_dotenv
 from google.adk.memory import InMemoryMemoryService
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -133,7 +137,9 @@ class LocalMemoryService(InMemoryMemoryService):
         base_memories = list(base_resp.memories or [])
 
         user_key = (app_name, user_id)
-        query_words = set(query.lower().split())
+        query_words = set(re.findall(r"[a-zA-Z0-9_]+", query.lower()))
+        for w in list(query_words):
+            query_words.update(w.split("_"))
 
         scored: list[tuple[int, Any]] = []
         with self._lock:
@@ -146,7 +152,10 @@ class LocalMemoryService(InMemoryMemoryService):
                     t = getattr(p, "text", "")
                     if t:
                         text += t
-            words_in_text = set(text.lower().split())
+            words_in_text = set(re.findall(r"[a-zA-Z0-9_]+", text.lower()))
+            for w in list(words_in_text):
+                words_in_text.update(w.split("_"))
+
             matched = len(query_words.intersection(words_in_text))
             meta = getattr(mem, "custom_metadata", {}) or {}
             for v in meta.values():
@@ -161,10 +170,21 @@ class LocalMemoryService(InMemoryMemoryService):
 
 
 def get_memory_service():
-    """Return VertexAiMemoryBankService if DEPLOYMENT_ENV=='cloud', else LocalMemoryService."""
+    """Return VertexAiMemoryBankService if DEPLOYMENT_ENV=='cloud', else LocalMemoryService.
+
+    LocalMemoryService provides process-lifetime in-memory persistence for local development.
+    In cloud deployments, persistent cross-session memory is backed by Vertex AI Memory Bank.
+    If AGENT_ENGINE_ID is not yet configured, gracefully falls back to LocalMemoryService
+    rather than failing at module import time.
+    """
     if os.getenv("DEPLOYMENT_ENV", "local").lower() == "cloud":
-        from google.adk.memory import VertexAiMemoryBankService
         agent_engine_id = os.getenv("AGENT_ENGINE_ID")
+        if not agent_engine_id:
+            logger.warning(
+                "AGENT_ENGINE_ID is not set in environment. Falling back to LocalMemoryService until configured."
+            )
+            return LocalMemoryService()
+        from google.adk.memory import VertexAiMemoryBankService
         return VertexAiMemoryBankService(
             project=PROJECT_ID, location=LOCATION, agent_engine_id=agent_engine_id
         )

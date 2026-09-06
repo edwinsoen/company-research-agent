@@ -80,6 +80,7 @@ async def save_memory_after_publish(callback_context) -> None:
         ),
         custom_metadata={
             "topic": "company_brief_history",
+            "topics": [{"custom_topic_id": "company_brief_history"}],
             "company": company_name,
             "date": current_date,
             "doc_url": doc_url,
@@ -89,12 +90,12 @@ async def save_memory_after_publish(callback_context) -> None:
 
     history_metadata = {
         "topic": "company_brief_history",
+        "topics": [{"custom_topic_id": "company_brief_history"}],
         "company": company_name,
         "date": current_date,
         "doc_url": doc_url,
         "ttl": "7776000s",
     }
-
 
     try:
         res = callback_context.add_memory(memories=[history_entry], custom_metadata=history_metadata)
@@ -121,45 +122,79 @@ async def save_memory_after_publish(callback_context) -> None:
     except Exception as err:
         logger.warning("Failed to save brief record to memory: %s", err)
 
-    # 2. Persist user preferences for 'briefing_preferences' topic
+    # 2. Persist user preferences for 'briefing_preferences' topic (with deduplication)
     user_prefs = state.get("user_preferences") or {}
-    if user_prefs.get("focus_areas") or user_prefs.get("recipients"):
-        prefs_entry = MemoryEntry(
-            content=types.Content(
-                role="user",
-                parts=[types.Part.from_text(text=json.dumps(user_prefs))],
-            ),
-            custom_metadata={
-                "topic": "briefing_preferences",
-            },
-        )
+    has_prefs = bool(user_prefs.get("focus_areas") or user_prefs.get("recipients"))
+    if has_prefs:
+        # Check if identical preferences are already stored to avoid appending duplicate records
+        is_duplicate = False
         try:
-            res = callback_context.add_memory(
-                memories=[prefs_entry],
-                custom_metadata={"topic": "briefing_preferences"},
+            if hasattr(callback_context, "search_memory"):
+                existing_res = callback_context.search_memory("briefing preferences focus recipients")
+                if inspect.isawaitable(existing_res):
+                    existing_res = await existing_res
+                for mem in (getattr(existing_res, "memories", None) or []):
+                    if mem.content and mem.content.parts:
+                        for p in mem.content.parts:
+                            t = getattr(p, "text", "")
+                            if t:
+                                try:
+                                    parsed = json.loads(t)
+                                    if isinstance(parsed, dict) and parsed.get("focus_areas") == user_prefs.get(
+                                        "focus_areas"
+                                    ) and parsed.get("recipients") == user_prefs.get("recipients"):
+                                        is_duplicate = True
+                                        break
+                                except Exception:
+                                    pass
+                    if is_duplicate:
+                        break
+        except Exception as dup_check_err:
+            logger.debug("Deduplication check error (continuing with save): %s", dup_check_err)
+
+        if is_duplicate:
+            logger.info("Preferences already present in Memory Bank; skipping duplicate ingestion.")
+        else:
+            prefs_entry = MemoryEntry(
+                content=types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(text=json.dumps(user_prefs))],
+                ),
+                custom_metadata={
+                    "topic": "briefing_preferences",
+                    "topics": [{"custom_topic_id": "briefing_preferences"}],
+                },
             )
-            if inspect.isawaitable(res):
-                await res
-            logger.info("Successfully ingested user preferences to Memory Bank")
-        except NotImplementedError:
             try:
-                from google.adk.events import Event
-                mem_service = getattr(getattr(callback_context, "_invocation_context", None), "memory_service", None)
-                if mem_service and hasattr(mem_service, "add_events_to_memory"):
-                    ev = Event(author="user", content=prefs_entry.content)
-                    session = callback_context._invocation_context.session
-                    res = mem_service.add_events_to_memory(
-                        app_name=session.app_name,
-                        user_id=session.user_id,
-                        events=[ev],
-                    )
-                    if inspect.isawaitable(res):
-                        await res
-                    logger.info("Ingested preferences via fallback add_events_to_memory")
-            except Exception as fallback_err:
-                logger.warning("Fallback preferences add_events_to_memory failed: %s", fallback_err)
-        except Exception as err:
-            logger.warning("Failed to save preferences to memory: %s", err)
+                res = callback_context.add_memory(
+                    memories=[prefs_entry],
+                    custom_metadata={
+                        "topic": "briefing_preferences",
+                        "topics": [{"custom_topic_id": "briefing_preferences"}],
+                    },
+                )
+                if inspect.isawaitable(res):
+                    await res
+                logger.info("Successfully ingested user preferences to Memory Bank")
+            except NotImplementedError:
+                try:
+                    from google.adk.events import Event
+                    mem_service = getattr(getattr(callback_context, "_invocation_context", None), "memory_service", None)
+                    if mem_service and hasattr(mem_service, "add_events_to_memory"):
+                        ev = Event(author="user", content=prefs_entry.content)
+                        session = callback_context._invocation_context.session
+                        res = mem_service.add_events_to_memory(
+                            app_name=session.app_name,
+                            user_id=session.user_id,
+                            events=[ev],
+                        )
+                        if inspect.isawaitable(res):
+                            await res
+                        logger.info("Ingested preferences via fallback add_events_to_memory")
+                except Exception as fallback_err:
+                    logger.warning("Fallback preferences add_events_to_memory failed: %s", fallback_err)
+            except Exception as err:
+                logger.warning("Failed to save preferences to memory: %s", err)
 
     # 3. Trigger session extraction for standing preferences
     try:

@@ -6,7 +6,11 @@ Source: docs/hld.md §7.1 & §7.2
 import re
 from google.adk.agents import LlmAgent, SequentialAgent
 from meeting_prep.config import MODEL_NAME, enable_server_side_tools_callback
-from meeting_prep.tools.memory import preload_memory, initialize_briefing_session
+from meeting_prep.tools.memory import (
+    preload_memory,
+    preload_memory_tool,
+    initialize_briefing_session,
+)
 from meeting_prep.agents.disambiguator import create_entity_disambiguator
 from meeting_prep.agents.researchers import create_research_parallel
 from meeting_prep.agents.delta import create_delta_agent
@@ -73,7 +77,7 @@ def create_root_coordinator() -> SequentialAgent:
         name="root_coordinator_step",
         model=MODEL_NAME,
         instruction=ROOT_COORDINATOR_INSTRUCTION,
-        tools=[preload_memory, initialize_briefing_session],
+        tools=[preload_memory_tool, initialize_briefing_session, preload_memory],
         before_model_callback=enable_server_side_tools_callback,
     )
     pipeline = create_brief_pipeline()

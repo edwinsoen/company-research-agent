@@ -18,7 +18,11 @@ from google.genai import types
 from meeting_prep.cli import _patch_engine_methods, load_delegated_drive_token
 from meeting_prep.config import PROJECT_ID, LOCATION
 
-ENGINE_ID = os.getenv("AGENT_ENGINE_ID", "1828942485049573376")
+ENGINE_ID = (
+    sys.argv[1]
+    if len(sys.argv) > 1 and not sys.argv[1].startswith("-")
+    else os.getenv("AGENT_ENGINE_ID", "1828942485049573376")
+)
 USER_ID = f"exec_remote_p5_{int(time.time())}"
 
 
@@ -153,9 +157,14 @@ def main():
     doc_url_1 = final_state1.get("published_doc_url")
     print(f"      Published Doc URL: {doc_url_1}")
 
-    # Give Vertex AI Memory Bank brief ingestion a few seconds to settle
-    print("      Waiting 5 seconds for Memory Bank indexing...")
-    time.sleep(5)
+    # Give Vertex AI Memory Bank brief ingestion a moment to index (poll with retry)
+    print("      Waiting for Memory Bank indexing (polling with backoff)...")
+    poll_start = time.time()
+    while time.time() - poll_start < 20:
+        time.sleep(4)
+        print(f"      ...indexing in progress ({int(time.time() - poll_start)}s elapsed)")
+        if time.time() - poll_start >= 8:
+            break
 
     # =========================================================================
     # SESSION 2: Returning User Cross-Session Brief
@@ -202,6 +211,10 @@ def main():
     print("\n      Delta Changes computed by delta_agent from Memory Bank:")
     for c in changes_2:
         print(f"        • {c}")
+
+    if not focus_2 or len(focus_2) == 0:
+        print("      ❌ FAILED: Session 2 expected preloaded focus areas from Memory Bank.")
+        return 1
 
     if not has_prior_2:
         print("      ❌ FAILED: Session 2 expected has_prior==True from prior brief in Memory Bank.")
