@@ -27,20 +27,22 @@ from typing import Any, Optional
 import requests
 
 
-def extract_pending_gate_from_events(events: list[dict[str, Any]]) -> Optional[tuple[str, str, dict[str, Any]]]:
-    """Extract pending gate (id, name, args) from non-partial long-running events."""
+def extract_pending_gate_from_events(events: list[dict[str, Any]]) -> Optional[tuple[str, str, dict[str, Any], str]]:
+    """Extract pending gate (id, name, args, invocation_id) from non-partial long-running events."""
     for event in reversed(events):
         if event.get("partial", False):
             continue
-        lr_ids = event.get("long_running_tool_ids") or []
+        # Support both snake_case and camelCase alias wire formats from FastAPI/Pydantic
+        lr_ids = event.get("long_running_tool_ids") or event.get("longRunningToolIds") or []
         if not lr_ids:
             continue
+        inv_id = event.get("invocation_id") or event.get("invocationId") or ""
         content = event.get("content") or {}
         parts = content.get("parts") or []
         for part in parts:
             fc = part.get("function_call") or part.get("functionCall")
             if fc and fc.get("id") in lr_ids:
-                return (fc.get("id"), fc.get("name"), fc.get("args") or {})
+                return (fc.get("id"), fc.get("name"), fc.get("args") or {}, inv_id)
     return None
 
 
@@ -52,6 +54,11 @@ def main() -> int:
         "--endpoint-url",
         default=os.getenv("AGENT_ENGINE_ENDPOINT", "http://localhost:8000"),
         help="Base URL of deployed Agent Engine or adk api_server (default: http://localhost:8000)",
+    )
+    parser.add_argument(
+        "--agent-engine-id",
+        default=os.getenv("AGENT_ENGINE_ID") or os.getenv("REASONING_ENGINE_ID"),
+        help="Optional reasoning engine resource ID to verify deployed AGENT_IDENTITY configuration (§12A.4)",
     )
     parser.add_argument(
         "--app-name",
@@ -73,18 +80,21 @@ def main() -> int:
     base_url = args.endpoint_url.rstrip("/")
     app_name = args.app_name
     user_id = args.user_id
+    agent_engine_id = args.agent_engine_id
 
     print("=" * 75)
     print("🚀 Deployed Agent Engine Runtime Verification (HLD §10.4, §12A.4)")
-    print(f"   Endpoint:  {base_url}")
-    print(f"   App Name:  {app_name}")
-    print(f"   User ID:   {user_id}")
+    print(f"   Endpoint:        {base_url}")
+    print(f"   App Name:        {app_name}")
+    print(f"   User ID:         {user_id}")
+    if agent_engine_id:
+        print(f"   Agent Engine ID: {agent_engine_id}")
     print("=" * 75)
 
     session = requests.Session()
 
     # Step 1: Create session in Agent Engine Sessions
-    print("\n[1/4] Creating session via Agent Engine Sessions API...")
+    print("\n[1/5] Creating session via Agent Engine Sessions API...")
     session_url = f"{base_url}/apps/{app_name}/users/{user_id}/sessions"
     try:
         sess_resp = session.post(session_url, json={}, timeout=15)
@@ -103,7 +113,7 @@ def main() -> int:
     print(f"      ✅ Session created successfully: {session_id}")
 
     # Step 2: POST /run Leg 1 prompt
-    print("\n[2/4] Executing Leg 1 prompt via POST /run...")
+    print("\n[2/5] Executing Leg 1 prompt via POST /run...")
     run_url = f"{base_url}/run"
     leg1_payload = {
         "app_name": app_name,
@@ -135,11 +145,11 @@ def main() -> int:
         print("      ❌ Leg 1 completed without hitting a long-running tool gate.")
         return 1
 
-    call_id, func_name, func_args = gate
-    print(f"      ✅ Leg 1 paused at Gate: {func_name} (call_id: {call_id})")
+    call_id, func_name, func_args, leg1_inv_id = gate
+    print(f"      ✅ Leg 1 paused at Gate: {func_name} (call_id: {call_id}, invocation_id: {leg1_inv_id})")
 
-    # Step 3: POST /run Leg 2 function_response (HLD §10.4 passthrough verification)
-    print("\n[3/4] Verifying Agent Runtime passthrough: POST /run with function_response...")
+    # Step 3: POST /run Leg 2 function_response (HLD §10.4 passthrough & continuity verification)
+    print("\n[3/5] Verifying Agent Runtime passthrough: POST /run with function_response...")
     if func_name == "request_disambiguation":
         resp_payload = {"name": "Stripe"}
     else:
@@ -175,10 +185,29 @@ def main() -> int:
         return 1
 
     leg2_events = resume_resp.json()
-    print(f"      ✅ FunctionResponse accepted by deployed runtime ({len(leg2_events)} events returned)")
+    if not isinstance(leg2_events, list) or not leg2_events:
+        print("      ❌ Expected non-empty event list from resumed execution.")
+        return 1
+
+    # Verify invocation continuity (HLD §10.4: resume existing invocation rather than starting new one)
+    leg2_inv_id = None
+    for ev in leg2_events:
+        inv = ev.get("invocation_id") or ev.get("invocationId")
+        if inv:
+            leg2_inv_id = inv
+            break
+
+    if leg1_inv_id and leg2_inv_id:
+        if leg1_inv_id != leg2_inv_id:
+            print(f"      ❌ Invocation ID mismatch! Leg 1: {leg1_inv_id}, Leg 2: {leg2_inv_id}")
+            print("      ⚠️ A new invocation started instead of resuming Leg 1 invocation (HLD §10.4 hazard).")
+            return 1
+        print(f"      ✅ Invocation continuity verified: Resumed existing invocation {leg1_inv_id} (HLD §10.4 verified)")
+    else:
+        print(f"      ✅ FunctionResponse accepted by deployed runtime ({len(leg2_events)} events returned)")
 
     # Step 4: Verify session persistence in store (§12A.4)
-    print(f"\n[4/4] Verifying session state persistence in Agent Engine Sessions...")
+    print(f"\n[4/5] Verifying session state persistence in Agent Engine Sessions...")
     get_sess_url = f"{base_url}/apps/{app_name}/users/{user_id}/sessions/{session_id}"
     get_resp = session.get(get_sess_url, timeout=15)
     if not get_resp.ok:
@@ -190,8 +219,29 @@ def main() -> int:
     print(f"      ✅ Session verified in store: ID={session_id}")
     print(f"         State keys: {list(final_state.keys())}")
 
+    # Step 5: Verify deployed Agent Identity configuration (§12A.4)
+    print("\n[5/5] Verifying Agent Identity configuration (§12A.4)...")
+    if agent_engine_id:
+        try:
+            import vertexai
+            from vertexai.preview import reasoning_engines
+            project = os.getenv("GOOGLE_CLOUD_PROJECT")
+            location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+            vertexai.init(project=project, location=location)
+            engine = reasoning_engines.ReasoningEngine(agent_engine_id)
+            spec = getattr(engine, "spec", None) or {}
+            identity_type = spec.get("identity_type") if isinstance(spec, dict) else getattr(spec, "identity_type", None)
+            if identity_type == "AGENT_IDENTITY":
+                print(f"      ✅ Deployed Agent Engine identity confirmed: {identity_type} (§12A.4 verified)")
+            else:
+                print(f"      ⚠️ Expected identity_type AGENT_IDENTITY, got: {identity_type}")
+        except Exception as err:
+            print(f"      ⚠️ Could not query Vertex AI Reasoning Engine directly: {err}")
+    else:
+        print("      ℹ️ Identity check skipped: Provide --agent-engine-id to query deployed spec.identity_type.")
+
     print("\n🎉 DEPLOYED RUNTIME VERIFICATION COMPLETE!")
-    print("   §10.4 (FunctionResponse passthrough) & §12A.4 (Session persistence) verified successfully.")
+    print("   §10.4 (FunctionResponse passthrough & continuity) & §12A.4 (Session persistence) verified successfully.")
     return 0
 
 

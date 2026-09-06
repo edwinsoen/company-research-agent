@@ -26,7 +26,10 @@ from google.genai import types
 from pydantic import BaseModel, Field
 
 from meeting_prep.app import app as adk_app
-from meeting_prep.auth import set_session_delegated_token
+from meeting_prep.auth import (
+    set_session_delegated_token,
+    clear_session_delegated_token,
+)
 from meeting_prep.config import (
     MODEL_NAME,
     PROJECT_ID,
@@ -194,6 +197,8 @@ async def create_brief(req: CreateBriefRequest):
     )
     state = updated_session.state if updated_session else {}
     brief_status = derive_brief_status(state, pending_gate)
+    if brief_status in ("completed", "failed"):
+        clear_session_delegated_token(session.id)
 
     if pending_gate:
         call_id, func_name, args = pending_gate
@@ -304,6 +309,8 @@ async def submit_decision(session_id: str, decision: DecisionRequest, user_id: O
     )
     state = updated_session.state if updated_session else {}
     brief_status = derive_brief_status(state, pending_gate)
+    if brief_status in ("completed", "failed"):
+        clear_session_delegated_token(session.id)
 
     if pending_gate:
         c_id, f_name, args = pending_gate
