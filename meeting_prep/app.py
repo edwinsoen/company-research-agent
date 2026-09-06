@@ -24,11 +24,11 @@ app = App(
     name="meeting_prep",
     root_agent=root_agent,
     plugins=[
+        BudgetPlugin(),
         RedactionPlugin(),
         InjectionGuardPlugin(),
         PublishPolicyPlugin(),
         GroundingGuardPlugin(),
-        BudgetPlugin(),
     ],
     resumability_config=ResumabilityConfig(is_resumable=True),
 )

@@ -266,8 +266,9 @@ class RedactionPlugin(BasePlugin):
         tool_context: ToolContext,
         result: dict[str, Any],
     ) -> Optional[dict[str, Any]]:
-        """Sanitize sensitive secrets and raw PII from tool outputs before passing to agent context."""
         if not result or not isinstance(result, dict):
             return None
         sanitized = self.pipeline.redact_data(result)
-        return sanitized if isinstance(sanitized, dict) else result
+        if sanitized == result:
+            return None
+        return sanitized if isinstance(sanitized, dict) else None

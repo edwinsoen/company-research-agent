@@ -18,11 +18,20 @@ import logging
 import re
 from typing import Any, Optional
 
+from google.adk.agents.callback_context import CallbackContext
+from google.adk.models import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 
 logger = logging.getLogger(__name__)
+
+RESEARCHER_AGENTS = {
+    "profile_researcher",
+    "news_researcher",
+    "focus_researcher",
+    "delta_researcher",
+}
 
 # Compile high-confidence prompt injection patterns
 INJECTION_PATTERNS = [
@@ -127,5 +136,63 @@ class InjectionGuardPlugin(BasePlugin):
                 },
             )
             return sanitized_result if isinstance(sanitized_result, dict) else result
+
+        return None
+
+    async def after_model_callback(
+        self,
+        *,
+        callback_context: CallbackContext,
+        llm_response: LlmResponse,
+    ) -> Optional[LlmResponse]:
+        """Scan model outputs from researcher agents and search grounding for prompt injections."""
+        agent_name = getattr(callback_context, "agent_name", "")
+        has_grounding = getattr(llm_response, "grounding_metadata", None) is not None
+
+        # Only scan researcher agents or responses that used search grounding
+        if agent_name not in RESEARCHER_AGENTS and not has_grounding:
+            return None
+
+        if not llm_response or not getattr(llm_response, "content", None):
+            return None
+
+        content = llm_response.content
+        parts = getattr(content, "parts", None)
+        if not parts:
+            return None
+
+        total_hits = 0
+
+        for part in parts:
+            text = getattr(part, "text", None)
+            if text:
+                sanitized_text, hits = self.scan_and_sanitize_text(text)
+                if hits:
+                    part.text = sanitized_text
+                    total_hits += (hits if isinstance(hits, int) else (1 if hits else 0))
+
+        # Also inspect grounding metadata web chunks if present
+        grounding = getattr(llm_response, "grounding_metadata", None)
+        if grounding and getattr(grounding, "grounding_chunks", None):
+            for chunk in grounding.grounding_chunks:
+                web = getattr(chunk, "web", None)
+                if web and getattr(web, "title", None):
+                    sanitized_title, hits = self.scan_and_sanitize_text(web.title)
+                    if hits:
+                        web.title = sanitized_title
+                        total_hits += (hits if isinstance(hits, int) else (1 if hits else 0))
+
+        if total_hits > 0:
+            logger.warning(
+                "InjectionGuardPlugin DETECTED %d prompt-injection patterns in %s model response. Sanitized payload.",
+                total_hits,
+                agent_name or "grounded_agent",
+                extra={
+                    "event_type": "prompt_injection_neutralized",
+                    "agent": agent_name,
+                    "hits": total_hits,
+                },
+            )
+            return llm_response
 
         return None
