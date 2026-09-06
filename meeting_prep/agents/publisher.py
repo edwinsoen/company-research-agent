@@ -7,6 +7,7 @@ Source: docs/hld.md §7.2
 from google.adk.agents import LlmAgent
 from meeting_prep.config import MODEL_NAME, enable_server_side_tools_callback
 from meeting_prep.tools.drive import create_google_doc, share_doc
+from meeting_prep.callbacks.memory import save_memory_after_publish
 
 PUBLISHER_INSTRUCTION = """\
 You are an executive publishing agent.
@@ -18,6 +19,7 @@ Company name: {resolved_entity.name}
 Approved draft:
 {brief_draft}
 
+Draft version: {draft_version}
 Recipients to share with: {user_preferences.recipients}
 
 Instructions:
@@ -25,7 +27,7 @@ Instructions:
    - title: "Executive Brief: {resolved_entity.name}"
    - markdown: {brief_draft}
    - brief_id: "{resolved_entity.name}"
-   - version: 1
+   - version: {draft_version}
 2. If recipients are provided, call `share_doc` with the returned doc_id and recipient emails.
 3. Return a confirmation message with the published doc_url.
 """
@@ -33,7 +35,11 @@ Instructions:
 
 def check_approval_before_publish(callback_context):
     """Ensure publisher only runs if brief was explicitly approved by the human reviewer (HLD §9.4, §10.1)."""
-    decision = callback_context.state.get("approval_decision") or {}
+    state = callback_context.state
+    if "draft_version" not in state or state["draft_version"] is None:
+        state["draft_version"] = 1
+
+    decision = state.get("approval_decision") or {}
     if isinstance(decision, dict):
         status = decision.get("status")
     else:
@@ -56,5 +62,6 @@ def create_publisher() -> LlmAgent:
         instruction=PUBLISHER_INSTRUCTION,
         tools=[create_google_doc, share_doc],
         before_agent_callback=check_approval_before_publish,
+        after_agent_callback=save_memory_after_publish,
         before_model_callback=enable_server_side_tools_callback,
     )
