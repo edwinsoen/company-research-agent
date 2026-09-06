@@ -7,7 +7,8 @@ Source: docs/hld.md §7.2
 from google.adk.agents import LlmAgent
 from google.adk.tools import google_search
 
-from meeting_prep.config import MODEL_NAME, enable_server_side_tools_callback
+from meeting_prep.config import enable_server_side_tools_callback
+from meeting_prep.models import MODEL_ROUTING
 from meeting_prep.schemas import ResolvedEntity
 from meeting_prep.tools.hitl import request_disambiguation
 from meeting_prep.callbacks.telemetry import before_agent_telemetry, after_agent_telemetry
@@ -33,7 +34,7 @@ def create_entity_disambiguator() -> LlmAgent:
     """Create the entity_disambiguator agent."""
     return LlmAgent(
         name="entity_disambiguator",
-        model=MODEL_NAME,
+        model=MODEL_ROUTING["entity_disambiguator"],
         instruction=DISAMBIGUATOR_INSTRUCTION,
         tools=[google_search, request_disambiguation],
         before_agent_callback=before_agent_telemetry,

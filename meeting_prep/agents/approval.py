@@ -6,7 +6,8 @@ Source: docs/hld.md §7.2
 
 from google.adk.agents import LlmAgent, LoopAgent
 from google.adk.tools import AgentTool
-from meeting_prep.config import MODEL_NAME, enable_server_side_tools_callback
+from meeting_prep.config import enable_server_side_tools_callback
+from meeting_prep.models import MODEL_ROUTING
 from meeting_prep.schemas import ApprovalDecision, RefinementRouting, RefinementTarget
 from meeting_prep.tools.hitl import approve_brief
 from meeting_prep.agents.composer import create_composer
@@ -143,7 +144,7 @@ def create_approval_gate() -> LlmAgent:
     """Create the approval_gate agent."""
     return LlmAgent(
         name="approval_gate",
-        model=MODEL_NAME,
+        model=MODEL_ROUTING["approval_gate"],
         instruction=APPROVAL_GATE_INSTRUCTION,
         tools=[approve_brief],
         before_agent_callback=before_agent_telemetry,
@@ -163,7 +164,7 @@ def create_refinement_router() -> LlmAgent:
 
     return LlmAgent(
         name="refinement_router",
-        model=MODEL_NAME,
+        model=MODEL_ROUTING["refinement_router"],
         instruction=REFINEMENT_ROUTER_INSTRUCTION,
         tools=[profile_tool, news_tool, focus_tool, all_tool],
         before_agent_callback=before_agent_telemetry,

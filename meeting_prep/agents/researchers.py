@@ -8,7 +8,8 @@ Source: docs/hld.md §7.2
 from google.adk.agents import LlmAgent, ParallelAgent
 from google.adk.tools import google_search
 
-from meeting_prep.config import MODEL_NAME, enable_server_side_tools_callback
+from meeting_prep.config import enable_server_side_tools_callback
+from meeting_prep.models import MODEL_ROUTING
 from meeting_prep.schemas import ResearchFindings
 from meeting_prep.callbacks.telemetry import before_agent_telemetry, after_agent_telemetry
 
@@ -80,7 +81,7 @@ def create_profile_researcher() -> LlmAgent:
     return LlmAgent(
         name="profile_researcher",
         description="Researches company profile, business model, scale, funding, valuation, and executive leadership.",
-        model=MODEL_NAME,
+        model=MODEL_ROUTING["profile_researcher"],
         instruction=PROFILE_RESEARCHER_INSTRUCTION,
         tools=[google_search],
         before_agent_callback=before_agent_telemetry,
@@ -96,7 +97,7 @@ def create_news_researcher() -> LlmAgent:
     return LlmAgent(
         name="news_researcher",
         description="Researches recent major announcements, news, product launches, and developments in the last 90 days.",
-        model=MODEL_NAME,
+        model=MODEL_ROUTING["news_researcher"],
         instruction=NEWS_RESEARCHER_INSTRUCTION,
         tools=[google_search],
         before_agent_callback=before_agent_telemetry,
@@ -112,7 +113,7 @@ def create_focus_researcher() -> LlmAgent:
     return LlmAgent(
         name="focus_researcher",
         description="Researches custom user-specified strategic focus areas for the target company.",
-        model=MODEL_NAME,
+        model=MODEL_ROUTING["focus_researcher"],
         instruction=FOCUS_RESEARCHER_INSTRUCTION,
         tools=[google_search],
         before_agent_callback=before_agent_telemetry,

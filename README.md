@@ -18,7 +18,7 @@ Preparing for external meetings—whether with partners, clients, or vendors—r
 
 ---
 
-## Architecture (Phases 1–6)
+## Architecture (Phases 1–7)
 
 ```mermaid
 flowchart TD
@@ -495,6 +495,49 @@ View structured operational logs, intent/outcome pairs, and diagnostic events:
   .venv/bin/python scripts/run_phase6.py
   ```
   Validates all 5 Phase 6 observability criteria in a single headless run (records 70+ structured JSON logs, verifies intent/outcome pairing, confirms 0 PII leaks, validates 50+ OpenTelemetry spans with custom subagent attributes, and renders the UI Provenance Panel).
+
+---
+
+## Phase 7: Orchestration & Logic Enhancements
+
+Phase 7 introduces strategic multi-tier model routing and global runtime security guardrails implemented as ADK Plugins:
+
+### 1. Strategic Model Routing (`meeting_prep/models.py`)
+- **Tiering by Task Shape**:
+  - **Flash-Lite** (`gemini-3.5-flash-lite`): `entity_disambiguator`, `approval_gate`, `publisher` (deterministic, structured extraction with fixed schemas).
+  - **Flash** (`gemini-3.7-flash`): `profile_researcher`, `news_researcher`, `focus_researcher`, `refinement_router` (high-volume parallel extractions).
+  - **Pro** (`gemini-3.1-pro-preview`): `delta_agent`, `composer` (genuine synthesis across multi-source findings, delta reasoning, and citation preservation).
+- **Dynamic Escalation**: Composer begins on Flash for fast baseline synthesis. If the grounding check detects unsourced claims, it dynamically escalates to Pro on retry with corrective instructions.
+- **Routing Observability**: Each agent's active model tier is explicitly emitted as an OpenTelemetry span attribute (`subagent.model`).
+
+### 2. Runtime Guardrail Plugins (`meeting_prep/plugins/`)
+Registered globally across the runner via ADK's `App(plugins=[...])`:
+- **`PublishPolicyPlugin`** (`before_tool` on `create_google_doc`, `share_doc`):
+  - Hard gate asserting `approval_decision.status == "approved"`.
+  - Recipient domain validation against `ALLOWED_RECIPIENT_DOMAINS` (defaults to wildcard `*`).
+  - Idempotency key tracking `(brief_id, draft_version)` preventing duplicate document creations.
+- **`GroundingGuardPlugin`** (`after_model` on `composer`):
+  - Deterministic zero-LLM claim line extractor verifying every assertion carries a citation URL present in `research_*` findings.
+  - Controls the 2-iteration retry flow: escalates to Pro tier on attempt 1, surfaces unsourced claim callouts on attempt 2.
+- **`BudgetPlugin`** (`before_model` / `after_model`):
+  - Tracks model calls, prompt tokens, candidate tokens, and total token usage.
+  - Aborts gracefully before model execution if call count (`BUDGET_MAX_MODEL_CALLS`) or token ceiling (`BUDGET_MAX_TOKENS`) is breached.
+  - Natural home for tracking refinement iterations.
+- **`InjectionGuardPlugin`** (`after_tool` on `google_search`):
+  - Scans retrieved web content for instruction-override and prompt-injection patterns.
+  - Sanitizes offending snippets and logs structured security audit events.
+- **`RedactionPlugin`**:
+  - Global PII and credential sanitization engine migrated into `meeting_prep/plugins/redaction.py`.
+
+### 3. Verification Suite
+- Comprehensive unit tests:
+  ```bash
+  .venv/bin/pytest -v tests/test_model_routing.py tests/test_guardrail_plugins.py
+  ```
+- Full test suite:
+  ```bash
+  .venv/bin/pytest -v tests/
+  ```
 
 ---
 

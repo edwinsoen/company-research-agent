@@ -1,13 +1,20 @@
-"""Composer agent.
+"""Composer agent and composer retry flow.
 
 Synthesizes structured findings into an executive one-page markdown brief with inline citations.
-Source: docs/hld.md §7.2
+Supports dynamic escalation to PRO on grounding self-check failure.
+
+Source: docs/hld.md §7.2, docs/orchestration-and-logic-enhancements.md §1 & §2
 """
 
-from google.adk.agents import LlmAgent
-from meeting_prep.config import MODEL_NAME
+from __future__ import annotations
+
+import logging
+from typing import Any, Optional
+from google.adk.agents import LlmAgent, LoopAgent
+from meeting_prep.models import MODEL_ROUTING, PRO
 from meeting_prep.callbacks.telemetry import before_agent_telemetry, after_agent_telemetry
 
+logger = logging.getLogger(__name__)
 
 COMPOSER_INSTRUCTION = """\
 You are an executive intelligence briefing composer.
@@ -24,6 +31,7 @@ Inputs from research:
 - Prior draft (if refining): {brief_draft?}
 - Refinement directive (if refining): {refinement_directive?}
 - Refinement target (if refining): {refinement_target?}
+- Corrective instruction (if retrying grounding): {grounding_correction?}
 
 Requirements:
 1. Synthesize ONLY from the provided structured findings. Do not hallucinate external claims.
@@ -65,42 +73,70 @@ Requirements:
 """
 
 
-async def save_composer_draft_artifact(callback_context):
-    """Save the generated brief_draft as a versioned artifact in ArtifactService (HLD §7.2, §9.2)."""
+def prepare_composer_before_agent(callback_context: Any) -> None:
+    """Check if model escalation to PRO is requested in state."""
+    state = callback_context.state
+    agent = getattr(callback_context, "agent", None)
+    if agent and hasattr(agent, "model"):
+        escalated_model = state.get("composer_model")
+        if escalated_model and agent.model != escalated_model:
+            logger.info("Escalating composer model dynamically to: %s", escalated_model)
+            agent.model = escalated_model
+
+    before_agent_telemetry(callback_context)
+
+
+async def save_composer_draft_artifact(callback_context: Any) -> Optional[Any]:
+    """Save generated draft and handle retry loop progression."""
     state = callback_context.state
     brief_draft = state.get("brief_draft")
     if not brief_draft:
         return None
 
-    current_version = int(state.get("draft_version", 0) or 0)
-    new_version = current_version + 1
-    state["draft_version"] = new_version
+    # If grounding check passed or repeated attempt completed, escalate to break out of composer retry loop
+    retry_needed = state.get("grounding_retry_needed", False)
+    if not retry_needed:
+        callback_context.actions.escalate = True
 
-    filename = f"brief_draft_v{new_version}.md"
-    try:
-        from google.genai import types
-        part = types.Part.from_text(text=brief_draft)
-        await callback_context.save_artifact(
-            filename=filename,
-            artifact=part,
-            custom_metadata={"draft_version": new_version},
-        )
-    except Exception:
-        # Fallback if artifact service is not configured in runner
-        pass
+    current_version = int(state.get("draft_version", 0) or 0)
+    # Increment version only when not retrying an ungrounded attempt
+    if not retry_needed:
+        new_version = current_version + 1
+        state["draft_version"] = new_version
+        filename = f"brief_draft_v{new_version}.md"
+        try:
+            from google.genai import types
+            part = types.Part.from_text(text=brief_draft)
+            await callback_context.save_artifact(
+                filename=filename,
+                artifact=part,
+                custom_metadata={"draft_version": new_version},
+            )
+        except Exception:
+            pass
+
     after_agent_telemetry(callback_context)
     return None
 
 
-def create_composer() -> LlmAgent:
-    """Create the composer agent."""
+def create_composer_agent() -> LlmAgent:
+    """Create the core composer LlmAgent."""
+    baseline_model = MODEL_ROUTING.get("composer", "gemini-3.7-flash")
     return LlmAgent(
         name="composer",
-        model=MODEL_NAME,
+        model=baseline_model,
         instruction=COMPOSER_INSTRUCTION,
         tools=[],
-        before_agent_callback=before_agent_telemetry,
+        before_agent_callback=prepare_composer_before_agent,
         output_key="brief_draft",
         after_agent_callback=save_composer_draft_artifact,
     )
 
+
+def create_composer() -> LoopAgent:
+    """Create the composer flow with dynamic escalation loop (HLD §7.2, enhancements §1.3)."""
+    return LoopAgent(
+        name="composer_flow",
+        max_iterations=2,
+        sub_agents=[create_composer_agent()],
+    )

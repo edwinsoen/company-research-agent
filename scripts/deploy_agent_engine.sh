@@ -2,14 +2,25 @@
 # Deploy Meeting Prep Copilot to Vertex AI Agent Engine with Agent Identity (HLD §12A, §14.1)
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# Source .env if present
+if [ -f "${REPO_ROOT}/.env" ]; then
+  set -a
+  source "${REPO_ROOT}/.env"
+  set +a
+fi
+
 PROJECT_ID="${GOOGLE_CLOUD_PROJECT:-$(gcloud config get-value project 2>/dev/null || echo '')}"
 if [ -z "${PROJECT_ID}" ]; then
   echo "Error: GOOGLE_CLOUD_PROJECT is not set and no active gcloud project found." >&2
   exit 1
 fi
-REGION="${GOOGLE_CLOUD_LOCATION:-us-central1}"
+REGION="${GOOGLE_CLOUD_REGION:-us-central1}"
 APP_NAME="meeting_prep"
 ARTIFACT_BUCKET="${PROJECT_ID}-${APP_NAME}-artifacts"
+AGENT_ENGINE_ID="${AGENT_ENGINE_ID:-${REASONING_ENGINE_ID:-}}"
 
 echo "==========================================================================="
 echo "🚀 Deploying Meeting Prep Copilot to Vertex AI Agent Engine"
@@ -17,6 +28,9 @@ echo "   Project:         ${PROJECT_ID}"
 echo "   Region:          ${REGION}"
 echo "   App:             ${APP_NAME}"
 echo "   Artifact Bucket: ${ARTIFACT_BUCKET}"
+if [ -n "${AGENT_ENGINE_ID}" ]; then
+  echo "   Target Engine:   ${AGENT_ENGINE_ID} (updating existing instance)"
+fi
 echo "==========================================================================="
 
 export DEPLOYMENT_ENV="cloud"
@@ -28,19 +42,21 @@ export ARTIFACT_BUCKET="${ARTIFACT_BUCKET}"
 ENV_FILE="$(mktemp)"
 trap 'rm -f "${ENV_FILE}"' EXIT
 
-AGENT_ENGINE_ID="${AGENT_ENGINE_ID:-${REASONING_ENGINE_ID:-}}"
-
 cat > "${ENV_FILE}" <<EOF
 DEPLOYMENT_ENV=cloud
 GOOGLE_GENAI_USE_VERTEXAI=true
 ARTIFACT_BUCKET=${ARTIFACT_BUCKET}
 GOOGLE_CLOUD_LOCATION=global
 MODEL_NAME=${MODEL_NAME:-gemini-3.7-flash}
-AGENT_ENGINE_ID=${AGENT_ENGINE_ID}
+MODEL_FLASH_LITE=${MODEL_FLASH_LITE:-gemini-3.5-flash-lite}
+MODEL_FLASH=${MODEL_FLASH:-gemini-3.7-flash}
+MODEL_PRO=${MODEL_PRO:-gemini-3.1-pro-preview}
+ALLOWED_RECIPIENT_DOMAINS=${ALLOWED_RECIPIENT_DOMAINS:-*}
 EOF
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+if [ -n "${AGENT_ENGINE_ID}" ]; then
+  echo "AGENT_ENGINE_ID=${AGENT_ENGINE_ID}" >> "${ENV_FILE}"
+fi
 
 # Resolve ADK executable (check PATH, .venv/bin/adk, or python -m google.adk.cli)
 if command -v adk >/dev/null 2>&1; then
@@ -55,10 +71,8 @@ else
   exit 1
 fi
 
-AGENT_ENGINE_ID="${AGENT_ENGINE_ID:-${REASONING_ENGINE_ID:-}}"
 EXTRA_ARGS=()
 if [ -n "${AGENT_ENGINE_ID}" ]; then
-  echo "   Target Engine:   ${AGENT_ENGINE_ID} (updating existing instance)"
   EXTRA_ARGS+=(--agent_engine_id="${AGENT_ENGINE_ID}")
 fi
 

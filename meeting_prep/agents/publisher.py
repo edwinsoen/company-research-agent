@@ -5,7 +5,8 @@ Source: docs/hld.md §7.2
 """
 
 from google.adk.agents import LlmAgent
-from meeting_prep.config import MODEL_NAME, enable_server_side_tools_callback
+from meeting_prep.config import enable_server_side_tools_callback
+from meeting_prep.models import MODEL_ROUTING
 from meeting_prep.tools.drive import create_google_doc, share_doc
 from meeting_prep.callbacks.memory import save_memory_after_publish
 from meeting_prep.callbacks.telemetry import before_agent_telemetry, after_agent_telemetry
@@ -70,7 +71,7 @@ def create_publisher() -> LlmAgent:
     """Create the publisher agent."""
     return LlmAgent(
         name="publisher",
-        model=MODEL_NAME,
+        model=MODEL_ROUTING["publisher"],
         instruction=PUBLISHER_INSTRUCTION,
         tools=[create_google_doc, share_doc],
         before_agent_callback=check_approval_before_publish,
